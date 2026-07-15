@@ -1,7 +1,56 @@
+# ---------- Reference checkout (keep local, do not commit) ----------
+_ref/
+
+# ---------- Node.js / dependencies ----------
 node_modules/
+
+# ---------- Build artifacts ----------
 dist/
 src-tauri/target/
+
+# ---------- Agent / internal ----------
+.superpowers/
+
+# ---------- Local environment and secrets ----------
+.npmrc
 .env
 .env.*
-.superpowers/
+.env.local
+.env.*.local
+*.local.json
+config.json
+
+# ---------- Runtime cache / local app data ----------
+EBWebView/
+AppData/
+Roaming/
+
+# ---------- Development and test outputs ----------
 *.log
+*.err.log
+*.out.log
+cargo-check*.log
+tauri-check*.log
+tauri-dev*.log
+tauri-open*.log
+tauri-dev-run*.log
+test-output/
+
+# ---------- Temporary dirty files ----------
+*.tmp
+
+# ---------- IDE / editors ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ---------- OS files ----------
+Thumbs.db
+Desktop.ini
+.DS_Store
