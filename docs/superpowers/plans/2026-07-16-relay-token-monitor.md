@@ -1,5 +1,7 @@
 # RelayTokenMonitor Implementation Plan
 
+> **Progress (2026-07-16):** Tasks **1–3 done**; next is **Task 4** (`relay.rs`). See `docs/superpowers/progress.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a Windows tray app (forked from DeepSeekMonitorWindows) that monitors CCTQ/New API balance, multi-key remaining quota, and ~7-day usage trends, with zh/en UI and an NSIS installer.
@@ -35,14 +37,14 @@
 
 ---
 
-### Task 1: Scaffold project from reference
+### Task 1: Scaffold project from reference ✅
 
 **Files:**
 - Create: project root app files by copying from `_ref/DeepSeekMonitorWindows/` (exclude `node_modules`, `target`, `dist`, `.git`)
 - Modify: `.gitignore`
 - Modify: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
 
-- [ ] **Step 1: Copy reference sources into repo root**
+- [x] **Step 1: Copy reference sources into repo root**
 
 ```powershell
 cd C:\Users\ASUS\RelayTokenMonitor
@@ -117,7 +119,7 @@ git commit -m "chore: scaffold RelayTokenMonitor from DeepSeekMonitorWindows"
 
 ---
 
-### Task 2: Config module + unit tests (TDD)
+### Task 2: Config module + unit tests (TDD) ✅
 
 **Files:**
 - Create: `src-tauri/src/config.rs`
@@ -294,7 +296,7 @@ git commit -m "feat: add RelayTokenMonitor config module with defaults"
 
 ---
 
-### Task 3: Aggregation helpers (TDD)
+### Task 3: Aggregation helpers (TDD) ✅
 
 **Files:**
 - Create: `src-tauri/src/aggregate.rs`
