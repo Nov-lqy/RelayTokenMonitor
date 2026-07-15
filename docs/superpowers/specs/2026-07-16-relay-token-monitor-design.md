@@ -1,15 +1,15 @@
-# RelayTokenMonitor — Design Spec
+# RelayTokenMonitor - Design Spec
 
 **Date:** 2026-07-16  
 **Status:** Draft for user review  
-**Primary target:** CCTQ (https://www.cctq.ai) — New API–compatible relay  
-**Base codebase:** Fork / adapt DeepSeekMonitorWindows (Tauri 2 + React + Rust)
+**Primary target:** CCTQ (https://www.cctq.ai) - New API-compatible relay  
+**Base codebase:** Fork/adapt DeepSeekMonitorWindows (Tauri 2 + React + Rust)
 
 ## 1. Goal
 
 Build a Windows tray monitor (UX close to DeepSeekMonitorWindows) that:
 
-- Shows account balance for a New API–compatible relay (default CCTQ)
+- Shows account balance for a New API-compatible relay (default CCTQ)
 - Supports many API keys under one base_url, with a manageable key list
 - Shows usage history (about 7-day trend + per-model summary)
 - Warns on low balance via color change only (no toast / sound / nagging)
@@ -20,7 +20,7 @@ v1 does NOT auto-fetch model pricing or estimate spend from /api/pricing.
 
 | Topic | Decision |
 |-------|----------|
-| Relay type | New API / One API–style panel |
+| Relay type | New API / One API-style panel |
 | Site | CCTQ: https://www.cctq.ai (API alt: https://cf-fast.cctq.ai) |
 | Auth | Panel Access Token and multiple sk- keys |
 | Form factor | Windows tray + main panel (like DeepSeek monitor) |
@@ -32,18 +32,21 @@ v1 does NOT auto-fetch model pricing or estimate spend from /api/pricing.
 
 Verified on CCTQ (public endpoints):
 
-- GET /api/status → quota_per_unit: 500000, quota_display_type: CNY, display_in_currency: true
-- GET /api/pricing → public catalog exists, but unused in v1
+- GET /api/status -> quota_per_unit: 500000, quota_display_type: CNY, display_in_currency: true
+- GET /api/pricing -> public catalog exists, but unused in v1
 
 ## 3. Architecture
 
-React UI (WebView2) — Home | Key Manager | Settings | Model detail
-  → Tauri commands →
+```
+React UI (WebView2) - Home | Key Manager | Settings | Model detail
+  -> Tauri commands ->
 Rust (config store, tray, single-instance, reqwest, refresh scheduler)
-  → HTTPS →
+  -> HTTPS ->
 CCTQ / New API (/api/user/self, /api/log/self[/stat], /api/token/, /api/usage/token)
+```
 
 Units:
+
 - config: load/save settings and keys locally
 - relay_client: typed New API calls
 - refresh: poll loop, backoff, cache last success
@@ -54,14 +57,14 @@ Units:
 
 ### 4.1 Config fields
 
-- base_url — default https://www.cctq.ai
-- access_token — panel user token
-- keys[] — { id, name, sk, note, enabled, last_known_remaining? }
-- refresh_interval_seconds — default 60
-- auto_refresh_enabled — default true
-- low_balance_threshold — CNY for color warning
-- quota_per_unit — default 500000 (configurable)
-- autostart — optional
+- base_url - default https://www.cctq.ai
+- access_token - panel user token
+- keys[] - { id, name, sk, note, enabled, last_known_remaining? }
+- refresh_interval_seconds - default 60
+- auto_refresh_enabled - default true
+- low_balance_threshold - CNY for color warning
+- quota_per_unit - default 500000 (configurable)
+- autostart - optional
 - UI prefs as needed
 
 Storage path: %APPDATA%\RelayTokenMonitor\ (do not reuse DeepSeekMonitorWindows folder).
@@ -78,14 +81,14 @@ Headers: Authorization Bearer token. Optional New-Api-User flag if needed.
 
 ### 4.3 Display mapping
 
-- Balance CNY ≈ (quota - used_quota) / quota_per_unit (map fields flexibly after probe)
+- Balance CNY ~= (quota - used_quota) / quota_per_unit (map fields flexibly after probe)
 - Trend / model summary from log + stat over last 7 days
-- Low balance: remaining < threshold → warn color
+- Low balance: remaining < threshold -> warn color
 
 ### 4.4 Refresh policy
 
 - Default 60s
-- On failure: exponential backoff 60→120→240… cap 10 min; reset after success
+- On failure: exponential backoff 60->120->240... cap 10 min; reset after success
 - Always refresh account balance; lazy per-key refresh for selected/visible keys
 
 ## 5. UI
@@ -126,10 +129,11 @@ Settings: Base URL, Access Token, refresh interval, threshold, autostart, connec
 Tests: CCTQ smoke; config CRUD; key CRUD + masking; tray/single-instance/auto-refresh; low-balance color.
 
 Acceptance:
-1. CCTQ Access Token → account balance CNY visible
+
+1. CCTQ Access Token -> account balance CNY visible
 2. Multiple keys managed; remaining/status refresh works
 3. ~7-day trend + per-model summary visible
-4. Below threshold → color warning; token expiry → clear prompt
+4. Below threshold -> color warning; token expiry -> clear prompt
 
 ## 10. Implementation note
 
