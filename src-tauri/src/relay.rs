@@ -48,31 +48,74 @@ fn client() -> Result<Client, String> {
         .map_err(|e| e.to_string())
 }
 
-fn auth_get(base: &str, path: &str, token: &str) -> Result<Value, String> {
+fn map_api_error(status: reqwest::StatusCode, v: &Value) -> String {
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let lower = message.to_lowercase();
+    if lower.contains("new-api-user") {
+        if lower.contains("not provided") {
+            return "未配置用户 ID（New-Api-User）".into();
+        }
+        if lower.contains("format") {
+            return "用户 ID 必须是数字".into();
+        }
+        if lower.contains("mismatch") {
+            return "用户 ID 与 Access Token 不匹配".into();
+        }
+        return message;
+    }
+    if status.as_u16() == 401 || lower.contains("unauthorized") || lower.contains("access token")
+    {
+        return "unauthorized".into();
+    }
+    if !message.is_empty() {
+        return message;
+    }
+    format!("http {}", status)
+}
+
+fn auth_get(
+    base: &str,
+    path: &str,
+    token: &str,
+    new_api_user: Option<&str>,
+) -> Result<Value, String> {
     let url = api_url(base, path);
-    let resp = client()?
+    let mut req = client()?
         .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .map_err(|e| e.to_string())?;
+        .header("Authorization", format!("Bearer {}", token));
+    if let Some(uid) = new_api_user.map(str::trim).filter(|u| !u.is_empty()) {
+        req = req.header("New-Api-User", uid);
+    }
+    let resp = req.send().map_err(|e| e.to_string())?;
     let status = resp.status();
     let v: Value = resp.json().map_err(|e| e.to_string())?;
-    if status.as_u16() == 401 {
-        return Err("unauthorized".into());
+    if v.get("success") == Some(&Value::Bool(true)) {
+        return Ok(v);
     }
-    if status.is_success() == false && v.get("success") != Some(&Value::Bool(true)) {
-        return Err(format!("http {}", status));
+    if v.get("success") == Some(&Value::Bool(false)) {
+        return Err(map_api_error(status, &v));
+    }
+    if !status.is_success() {
+        return Err(map_api_error(status, &v));
     }
     Ok(v)
 }
 
-pub fn fetch_user_self(base: &str, access_token: &str) -> Result<UserSelf, String> {
-    let v = auth_get(base, "/api/user/self", access_token)?;
+pub fn fetch_user_self(
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+) -> Result<UserSelf, String> {
+    let v = auth_get(base, "/api/user/self", access_token, Some(user_id))?;
     parse_user_self(&v)
 }
 
 pub fn fetch_token_usage(base: &str, sk: &str) -> Result<TokenUsage, String> {
-    let v = auth_get(base, "/api/usage/token", sk)?;
+    let v = auth_get(base, "/api/usage/token", sk, None)?;
     let data = v.get("data").ok_or("missing data")?;
     Ok(TokenUsage {
         name: data.get("name").and_then(|x| x.as_str()).unwrap_or("").into(),
@@ -86,6 +129,7 @@ pub fn fetch_token_usage(base: &str, sk: &str) -> Result<TokenUsage, String> {
 pub fn fetch_log_self(
     base: &str,
     access_token: &str,
+    user_id: &str,
     start_ts: i64,
     end_ts: i64,
 ) -> Result<Vec<LogRow>, String> {
@@ -93,7 +137,7 @@ pub fn fetch_log_self(
         "/api/log/self?type=2&start_timestamp={}&end_timestamp={}&page_size=100",
         start_ts, end_ts
     );
-    let v = auth_get(base, &path, access_token)?;
+    let v = auth_get(base, &path, access_token, Some(user_id))?;
     let items = v.pointer("/data/items")
         .or_else(|| v.pointer("/data"))
         .and_then(|x| x.as_array())
@@ -113,8 +157,12 @@ pub fn fetch_log_self(
     Ok(rows)
 }
 
-pub fn fetch_remote_tokens(base: &str, access_token: &str) -> Result<Vec<RemoteToken>, String> {
-    let v = auth_get(base, "/api/token/?p=0&size=100", access_token)?;
+pub fn fetch_remote_tokens(
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+) -> Result<Vec<RemoteToken>, String> {
+    let v = auth_get(base, "/api/token/?p=0&size=100", access_token, Some(user_id))?;
     let items = v.pointer("/data/items")
         .or_else(|| v.pointer("/data"))
         .and_then(|x| x.as_array())

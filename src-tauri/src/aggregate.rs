@@ -23,9 +23,10 @@ pub fn quota_to_cny(quota: u64, quota_per_unit: u64) -> f64 {
     quota as f64 / quota_per_unit as f64
 }
 
-pub fn remaining_cny(quota: u64, used_quota: u64, quota_per_unit: u64) -> f64 {
-    let rem = quota.saturating_sub(used_quota);
-    quota_to_cny(rem, quota_per_unit)
+/// New API `/api/user/self` returns `quota` as the current remaining balance.
+/// `used_quota` is cumulative historical spend and must not be subtracted again.
+pub fn remaining_cny(quota: u64, quota_per_unit: u64) -> f64 {
+    quota_to_cny(quota, quota_per_unit)
 }
 
 pub fn is_low_balance(remaining: f64, threshold: f64) -> bool {
@@ -72,8 +73,8 @@ mod tests {
     }
 
     #[test]
-    fn remaining_cny_subtracts_used() {
-        assert!((remaining_cny(2_500_000, 500_000, 500_000) - 4.0).abs() < 1e-9);
+    fn remaining_cny_uses_quota_directly() {
+        assert!((remaining_cny(2_500_000, 500_000) - 5.0).abs() < 1e-9);
     }
 
     #[test]

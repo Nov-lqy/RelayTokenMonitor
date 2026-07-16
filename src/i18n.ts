@@ -8,6 +8,7 @@ const dict = {
     refresh: "刷新",
     lowBalance: "余额偏低",
     accessToken: "系统访问令牌",
+    userId: "用户 ID",
     probe: "探测连接",
     syncKeys: "从面板同步",
     addKey: "添加 Key",
@@ -22,6 +23,8 @@ const dict = {
     showToken: "显示",
     hideToken: "隐藏",
     accessTokenHelper: "从 CCTQ 个人设置中复制系统访问令牌并粘贴到此处",
+    userIdHelper:
+      "数字用户 ID（请求头 New-Api-User）。在 CCTQ 控制台按 F12 → Network，查看任意请求头中的 New-Api-User",
     configured: "已配置",
     notConfigured: "未配置",
     saving: "正在保存…",
@@ -90,6 +93,7 @@ const dict = {
     refresh: "Refresh",
     lowBalance: "Low balance",
     accessToken: "System access token",
+    userId: "User ID",
     probe: "Probe connection",
     syncKeys: "Sync from panel",
     addKey: "Add key",
@@ -105,6 +109,8 @@ const dict = {
     hideToken: "Hide",
     accessTokenHelper:
       "Paste the system access token from CCTQ personal settings",
+    userIdHelper:
+      "Numeric user ID (New-Api-User header). In CCTQ console press F12 → Network and copy New-Api-User from any request",
     configured: "Configured",
     notConfigured: "Not configured",
     saving: "Saving…",

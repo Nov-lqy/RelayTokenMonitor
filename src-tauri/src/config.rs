@@ -27,6 +27,9 @@ pub struct StoredConfig {
     pub base_url: String,
     #[serde(default)]
     pub access_token: Option<String>,
+    /// Numeric New API user id for the `New-Api-User` request header.
+    #[serde(default)]
+    pub user_id: Option<String>,
     #[serde(default)]
     pub keys: Vec<StoredKey>,
     #[serde(default = "default_refresh")]
@@ -66,6 +69,7 @@ impl Default for StoredConfig {
         Self {
             base_url: default_base_url(),
             access_token: None,
+            user_id: None,
             keys: vec![],
             refresh_interval_seconds: default_refresh(),
             auto_refresh_enabled: true,

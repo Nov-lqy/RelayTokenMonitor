@@ -29,6 +29,7 @@ pub struct AppConfigDto {
     pub base_url: String,
     pub access_token_masked: Option<String>,
     pub has_access_token: bool,
+    pub user_id: String,
     pub keys: Vec<KeyDto>,
     pub refresh_interval_seconds: u64,
     pub auto_refresh_enabled: bool,
@@ -158,6 +159,7 @@ fn to_app_config_dto(cfg: &StoredConfig) -> AppConfigDto {
         base_url: cfg.base_url.clone(),
         access_token_masked,
         has_access_token,
+        user_id: cfg.user_id.clone().unwrap_or_default(),
         keys: cfg.keys.iter().map(to_key_dto).collect(),
         refresh_interval_seconds: cfg.refresh_interval_seconds,
         auto_refresh_enabled: cfg.auto_refresh_enabled,
@@ -199,14 +201,23 @@ pub fn apply_autostart(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn require_access_token(cfg: &StoredConfig) -> Result<(String, String), String> {
+fn require_panel_auth(cfg: &StoredConfig) -> Result<(String, String, String), String> {
     let token = cfg
         .access_token
         .as_ref()
         .filter(|t| !t.is_empty())
         .cloned()
         .ok_or_else(|| "未配置 Access Token".to_string())?;
-    Ok((cfg.base_url.clone(), token))
+    let user_id = cfg
+        .user_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "未配置用户 ID（New-Api-User）".to_string())?;
+    if user_id.parse::<i64>().is_err() {
+        return Err("用户 ID 必须是数字".to_string());
+    }
+    Ok((cfg.base_url.clone(), token, user_id))
 }
 
 #[tauri::command]
@@ -218,6 +229,7 @@ pub fn get_app_config() -> Result<AppConfigDto, String> {
 pub fn save_settings(
     base_url: String,
     access_token: String,
+    user_id: String,
     refresh_interval_seconds: u64,
     auto_refresh_enabled: bool,
     low_balance_threshold: f64,
@@ -232,6 +244,13 @@ pub fn save_settings(
     let token = access_token.trim().to_string();
     if !token.is_empty() {
         cfg.access_token = Some(token);
+    }
+    let uid = user_id.trim().to_string();
+    if !uid.is_empty() {
+        if uid.parse::<i64>().is_err() {
+            return Err("用户 ID 必须是数字".to_string());
+        }
+        cfg.user_id = Some(uid);
     }
     cfg.refresh_interval_seconds = normalize_refresh_interval_seconds(refresh_interval_seconds);
     cfg.auto_refresh_enabled = auto_refresh_enabled;
@@ -332,7 +351,7 @@ pub fn set_current_key(id: String) -> Result<AppConfigDto, String> {
 #[tauri::command]
 pub fn fetch_balance() -> Result<BalanceDto, String> {
     let cfg = read_stored_config();
-    let (base, token) = match require_access_token(&cfg) {
+    let (base, token, user_id) = match require_panel_auth(&cfg) {
         Ok(v) => v,
         Err(e) => {
             return Ok(BalanceDto {
@@ -346,10 +365,9 @@ pub fn fetch_balance() -> Result<BalanceDto, String> {
         }
     };
 
-    match fetch_user_self(&base, &token) {
+    match fetch_user_self(&base, &token, &user_id) {
         Ok(user) => {
-            let remaining =
-                remaining_cny(user.quota, user.used_quota, cfg.quota_per_unit);
+            let remaining = remaining_cny(user.quota, cfg.quota_per_unit);
             Ok(BalanceDto {
                 remaining_cny: remaining,
                 quota: user.quota,
@@ -383,12 +401,12 @@ pub fn fetch_balance() -> Result<BalanceDto, String> {
 #[tauri::command]
 pub fn fetch_usage_summary(days: u32) -> Result<UsageSummaryDto, String> {
     let cfg = read_stored_config();
-    let (base, token) = require_access_token(&cfg)?;
+    let (base, token, user_id) = require_panel_auth(&cfg)?;
     let days = days.max(1).min(90) as i64;
     let end_ts = now_unix();
     let start_ts = end_ts - days * 86_400;
 
-    let logs = fetch_log_self(&base, &token, start_ts, end_ts).map_err(|e| {
+    let logs = fetch_log_self(&base, &token, &user_id, start_ts, end_ts).map_err(|e| {
         if e == "unauthorized" || e.to_lowercase().contains("unauthorized") {
             "unauthorized".to_string()
         } else {
@@ -465,8 +483,8 @@ pub fn refresh_key_usage(id: String) -> Result<KeyUsageDto, String> {
 #[tauri::command]
 pub fn sync_keys_from_panel() -> Result<SyncKeysResult, String> {
     let mut cfg = read_stored_config();
-    let (base, token) = require_access_token(&cfg)?;
-    let remote = fetch_remote_tokens(&base, &token).map_err(|e| {
+    let (base, token, user_id) = require_panel_auth(&cfg)?;
+    let remote = fetch_remote_tokens(&base, &token, &user_id).map_err(|e| {
         if e == "unauthorized" || e.to_lowercase().contains("unauthorized") {
             "unauthorized".to_string()
         } else {
@@ -487,8 +505,8 @@ pub fn probe_connection() -> Result<ProbeResult, String> {
     let mut user_self_ok = false;
     let mut sample_key_ok = false;
 
-    match require_access_token(&cfg) {
-        Ok((base, token)) => match fetch_user_self(&base, &token) {
+    match require_panel_auth(&cfg) {
+        Ok((base, token, user_id)) => match fetch_user_self(&base, &token, &user_id) {
             Ok(user) => {
                 user_self_ok = true;
                 messages.push(format!(

@@ -13,6 +13,7 @@ export interface AppConfigView {
   baseUrl: string;
   accessTokenMasked: string;
   hasAccessToken: boolean;
+  userId: string;
   keys: StoredKeyView[];
   refreshIntervalSeconds: number;
   autoRefreshEnabled: boolean;
