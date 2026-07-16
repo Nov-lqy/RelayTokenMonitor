@@ -1,5 +1,6 @@
 mod config;
 mod aggregate;
+mod relay;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
