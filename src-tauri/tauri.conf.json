@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DeepSeek Monitor Windows",
+        "title": "RelayTokenMonitor",
         "width": 356,
         "height": 600,
         "resizable": false,

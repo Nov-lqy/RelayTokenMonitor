@@ -7,6 +7,7 @@ import {
   Brain,
   CalendarDays,
   CheckCircle2,
+  CloudDownload,
   CreditCard,
   Eye,
   EyeOff,
@@ -14,58 +15,32 @@ import {
   Info,
   KeyRound,
   Link2,
+  Plus,
   Power,
   RefreshCw,
   Settings,
   Shirt,
+  Star,
   SunMedium,
+  Trash2,
   X,
-  Zap,
 } from "lucide-react";
-import { t } from "./i18n";
-import type { AppConfigView, BalanceView, Locale } from "./types";
+import { t, tf } from "./i18n";
+import type {
+  AppConfigView,
+  BalanceView,
+  DayUsageView,
+  KeyUsageView,
+  Locale,
+  ModelUsageView,
+  StoredKeyView,
+  SyncKeysResult,
+  UsageSummaryView,
+} from "./types";
 import "./styles.css";
 
-type ViewName = "dashboard" | "settings" | "detail";
-type ModelName = "flash" | "pro";
+type ViewName = "dashboard" | "settings" | "keys" | "detail";
 type BalanceState = "loading" | "ok" | "error" | "nokey";
-
-/** Temporary dashboard shape until Task 8 rewires the home view. */
-type BalanceData = {
-  isAvailable: boolean;
-  currency: string;
-  totalBalance: string;
-  grantedBalance: string;
-  toppedUpBalance: string;
-};
-type UsageModel = {
-  key: string;
-  name: string;
-  totalTokens: number;
-  requestCount: number;
-  cacheHitTokens: number;
-  cacheMissTokens: number;
-  responseTokens: number;
-  cost: number;
-};
-type UsageDay = {
-  date: string;
-  flashTokens: number;
-  flashCacheHit: number;
-  flashCacheMiss: number;
-  flashResponse: number;
-  proTokens: number;
-  proCacheHit: number;
-  proCacheMiss: number;
-  proResponse: number;
-  totalTokens: number;
-  totalCost: number;
-};
-type UsageResult = {
-  models: UsageModel[];
-  days: UsageDay[];
-  monthCost: number;
-};
 
 type ProbeResult = {
   userSelfOk: boolean;
@@ -108,87 +83,118 @@ const addDays = (date: Date, offset: number) => {
   next.setDate(next.getDate() + offset);
   return next;
 };
-const recentUsageDays = (days: UsageDay[], count = 7): UsageDay[] => {
+const recentUsageDays = (days: DayUsageView[], count = 7): DayUsageView[] => {
   const source = new Map(days.filter((day) => day.date <= todayStr()).map((day) => [day.date, day]));
   const today = new Date();
   return Array.from({ length: count }, (_, index) => {
     const date = dateKey(addDays(today, index - count + 1));
-    return (
-      source.get(date) ?? {
-        date,
-        flashTokens: 0,
-        flashCacheHit: 0,
-        flashCacheMiss: 0,
-        flashResponse: 0,
-        proTokens: 0,
-        proCacheHit: 0,
-        proCacheMiss: 0,
-        proResponse: 0,
-        totalTokens: 0,
-        totalCost: 0,
-      }
-    );
+    return source.get(date) ?? { date, totalTokens: 0 };
   });
 };
+
+const fmtCachedAt = (value?: number | string) => {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return new Date(value * 1000).toLocaleString();
+  }
+  return value;
+};
+
+const isNoTokenError = (message: string) =>
+  message.includes("未配置") ||
+  message.toLowerCase().includes("access token") ||
+  message.toLowerCase().includes("no access");
 const refreshIntervalValues = [60, 300, 1800, 3600] as const;
 
 function App() {
   const [view, setView] = React.useState<ViewName>("dashboard");
-  const [model, setModel] = React.useState<ModelName>("flash");
+  const [detailModel, setDetailModel] = React.useState<string | null>(null);
 
-  const [balance, setBalance] = React.useState<BalanceData | null>(null);
+  const [balance, setBalance] = React.useState<BalanceView | null>(null);
   const [balanceState, setBalanceState] = React.useState<BalanceState>("loading");
   const [balanceError, setBalanceError] = React.useState("");
 
-  const [usage, setUsage] = React.useState<UsageResult | null>(null);
-  const [usageState, setUsageState] = React.useState<BalanceState>("nokey");
+  const [usage, setUsage] = React.useState<UsageSummaryView | null>(null);
+  const [usageState, setUsageState] = React.useState<BalanceState>("loading");
   const [usageError, setUsageError] = React.useState("");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = React.useState(60);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = React.useState(false);
   const [locale, setLocale] = React.useState<Locale>("zh");
 
+  const lastBalanceRef = React.useRef<BalanceView | null>(null);
+  const lastUsageRef = React.useRef<UsageSummaryView | null>(null);
+
   const loadBalance = React.useCallback(() => {
-    setBalanceState("loading");
+    setBalanceState((prev) => (lastBalanceRef.current ? prev : "loading"));
     void invoke<BalanceView>("fetch_balance")
       .then((data) => {
         if (data.error) {
-          const message =
-            data.error.toLowerCase().includes("unauthorized")
-              ? t(locale, "unauthorized")
+          const message = data.error.toLowerCase().includes("unauthorized")
+            ? t(locale, "unauthorized")
+            : isNoTokenError(data.error)
+              ? t(locale, "noAccessToken")
               : data.error;
           setBalanceError(message);
+          if (
+            lastBalanceRef.current &&
+            !data.error.toLowerCase().includes("unauthorized") &&
+            !isNoTokenError(data.error)
+          ) {
+            setBalance(lastBalanceRef.current);
+            setBalanceState("ok");
+            return;
+          }
           setBalance(null);
-          setBalanceState(
-            data.error.includes("未配置") || data.error.toLowerCase().includes("access token")
-              ? "nokey"
-              : "error",
-          );
+          setBalanceState(isNoTokenError(data.error) ? "nokey" : "error");
           return;
         }
-        setBalance({
-          isAvailable: !data.isLow,
-          currency: "CNY",
-          totalBalance: data.remainingCny.toFixed(2),
-          grantedBalance: String(data.quota),
-          toppedUpBalance: String(data.usedQuota),
-        });
+        lastBalanceRef.current = data;
+        setBalance(data);
         setBalanceError("");
         setBalanceState("ok");
       })
       .catch((error) => {
-        const message = typeof error === "string" ? error : "查询失败";
+        const raw = typeof error === "string" ? error : t(locale, "queryFailed");
+        const message = raw.toLowerCase().includes("unauthorized")
+          ? t(locale, "unauthorized")
+          : raw;
         setBalanceError(message);
+        if (lastBalanceRef.current && !message.toLowerCase().includes("unauthorized")) {
+          setBalance(lastBalanceRef.current);
+          setBalanceState("ok");
+          return;
+        }
         setBalance(null);
-        setBalanceState(message.includes("未配置") ? "nokey" : "error");
+        setBalanceState(isNoTokenError(raw) ? "nokey" : "error");
       });
   }, [locale]);
 
   const loadUsage = React.useCallback(() => {
-    // Task 8 will wire fetch_usage_summary; keep dashboard from crashing for now.
-    setUsage(null);
-    setUsageError("");
-    setUsageState("nokey");
-  }, []);
+    setUsageState((prev) => (lastUsageRef.current ? prev : "loading"));
+    void invoke<UsageSummaryView>("fetch_usage_summary", { days: 7 })
+      .then((data) => {
+        lastUsageRef.current = data;
+        setUsage(data);
+        setUsageError("");
+        setUsageState("ok");
+      })
+      .catch((error) => {
+        const raw = typeof error === "string" ? error : t(locale, "usageUnavailable");
+        const message = raw.toLowerCase().includes("unauthorized")
+          ? t(locale, "unauthorized")
+          : isNoTokenError(raw)
+            ? t(locale, "noAccessToken")
+            : raw;
+        setUsageError(message);
+        if (lastUsageRef.current && !raw.toLowerCase().includes("unauthorized") && !isNoTokenError(raw)) {
+          setUsage(lastUsageRef.current);
+          setUsageState("ok");
+          return;
+        }
+        setUsage(null);
+        setUsageState(isNoTokenError(raw) ? "nokey" : "error");
+      });
+  }, [locale]);
 
   const refreshAll = React.useCallback(() => {
     loadBalance();
@@ -231,6 +237,7 @@ function App() {
     <div className="stage">
       {view === "dashboard" && (
         <DashboardPanel
+          locale={locale}
           balance={balance}
           balanceState={balanceState}
           balanceError={balanceError}
@@ -239,9 +246,10 @@ function App() {
           usageError={usageError}
           onRefresh={refreshAll}
           onClose={hideWindow}
+          onKeys={() => setView("keys")}
           onSettings={() => setView("settings")}
-          onDetail={(nextModel) => {
-            setModel(nextModel);
+          onDetail={(modelName) => {
+            setDetailModel(modelName);
             setView("detail");
           }}
         />
@@ -255,8 +263,20 @@ function App() {
           onBack={() => setView("dashboard")}
         />
       )}
-      {view === "detail" && (
-        <ModelDetailPanel model={model} usage={usage} usageState={usageState} onBack={() => setView("dashboard")} />
+      {view === "keys" && (
+        <KeysPanel locale={locale} onBack={() => setView("dashboard")} />
+      )}
+      {view === "detail" && detailModel && (
+        <ModelDetailPanel
+          locale={locale}
+          modelName={detailModel}
+          usage={usage}
+          usageState={usageState}
+          onBack={() => {
+            setDetailModel(null);
+            setView("dashboard");
+          }}
+        />
       )}
     </div>
   );
@@ -264,13 +284,14 @@ function App() {
 
 function BrandIcon({ size = 32 }: { size?: number }) {
   return (
-    <div className="brand-icon" style={{ width: size, height: size }}>
-      <img src="/assets/deepseek-color.png" alt="DeepSeek" />
+    <div className="brand-icon relay-brand-icon" style={{ width: size, height: size }}>
+      <KeyRound size={Math.round(size * 0.52)} className="brand-blue" />
     </div>
   );
 }
 
 function DashboardPanel({
+  locale,
   balance,
   balanceState,
   balanceError,
@@ -279,19 +300,22 @@ function DashboardPanel({
   usageError,
   onRefresh,
   onClose,
+  onKeys,
   onSettings,
   onDetail,
 }: {
-  balance: BalanceData | null;
+  locale: Locale;
+  balance: BalanceView | null;
   balanceState: BalanceState;
   balanceError: string;
-  usage: UsageResult | null;
+  usage: UsageSummaryView | null;
   usageState: BalanceState;
   usageError: string;
   onRefresh: () => void;
   onClose: () => void;
+  onKeys: () => void;
   onSettings: () => void;
-  onDetail: (model: ModelName) => void;
+  onDetail: (modelName: string) => void;
 }) {
   const [theme, setTheme] = React.useState<string>(
     () => localStorage.getItem("ui-theme") || "dark",
@@ -302,306 +326,557 @@ function DashboardPanel({
     localStorage.setItem("ui-theme", next);
     document.documentElement.setAttribute("data-theme", next);
   };
-  const flash = usage?.models.find((item) => item.key === "flash") ?? null;
-  const pro = usage?.models.find((item) => item.key === "pro") ?? null;
-  const maxTokens = Math.max(flash?.totalTokens ?? 0, pro?.totalTokens ?? 0, 1);
-  const today = usage?.days.find((day) => day.date === todayStr()) ?? null;
-  const todayCost = usageState === "ok" && today ? today.totalCost : null;
-  const monthCost = usageState === "ok" && usage ? usage.monthCost : null;
+
+  const models = usage?.byModel ?? [];
+  const maxTokens = Math.max(...models.map((item) => item.totalTokens), 1);
+  const daySlots = recentUsageDays(usage?.byDay ?? []);
+  const todayTokens = daySlots.find((day) => day.date === todayStr())?.totalTokens ?? null;
+  const total7d = daySlots.reduce((sum, day) => sum + day.totalTokens, 0);
+  const unauthorized =
+    balanceError.toLowerCase().includes("unauthorized") ||
+    balanceError.includes("登录态") ||
+    balanceError.includes("Session expired") ||
+    usageError.toLowerCase().includes("unauthorized") ||
+    usageError.includes("登录态") ||
+    usageError.includes("Session expired");
 
   return (
     <section className="panel dashboard-panel" data-testid="dashboard-panel">
       <header className="panel-header" data-tauri-drag-region>
         <div className="title-lockup" data-tauri-drag-region>
           <BrandIcon size={36} />
-          <h1>DeepSeek Monitor</h1>
+          <h1>{t(locale, "appName")}</h1>
         </div>
         <div className="header-actions">
-          <button aria-label="刷新" onClick={onRefresh}>
+          <button aria-label={t(locale, "refresh")} onClick={onRefresh}>
             <RefreshCw size={22} />
           </button>
           <div className="skin-menu-wrap">
             <button
-              aria-label="Toggle theme"
+              aria-label={t(locale, "themeToggle")}
               className="skin-toggle"
-              title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+              title={theme === "dark" ? t(locale, "themeToLight") : t(locale, "themeToDark")}
               onClick={toggleTheme}
             >
               <Shirt size={21} />
             </button>
           </div>
-          <button aria-label="设置" onClick={onSettings}>
+          <button aria-label={t(locale, "keys")} onClick={onKeys}>
+            <KeyRound size={22} />
+          </button>
+          <button aria-label={t(locale, "settings")} onClick={onSettings}>
             <Settings size={23} />
           </button>
-          <button aria-label="关闭" onClick={onClose}>
+          <button aria-label={t(locale, "close")} onClick={onClose}>
             <X size={25} />
           </button>
         </div>
       </header>
 
+      {unauthorized && (
+        <div className="auth-banner" role="alert">
+          <span>{t(locale, "unauthorizedHint")}</span>
+          <button type="button" className="primary" onClick={onSettings}>
+            {t(locale, "goToSettings")}
+          </button>
+        </div>
+      )}
+
       <BalanceCard
+        locale={locale}
         balance={balance}
         state={balanceState}
         error={balanceError}
-        todayCost={todayCost}
-        monthCost={monthCost}
+        todayTokens={todayTokens}
+        total7d={usageState === "ok" ? total7d : null}
       />
 
-      <div className="usage-stack">
-        <UsageRow
-          modelKey="flash"
-          data={flash}
-          maxTokens={maxTokens}
-          state={usageState}
-          onClick={() => onDetail("flash")}
-        />
-        <UsageRow
-          modelKey="pro"
-          data={pro}
-          maxTokens={maxTokens}
-          state={usageState}
-          onClick={() => onDetail("pro")}
-        />
-      </div>
+      {models.length > 0 && (
+        <div className="usage-stack">
+          {models.slice(0, 4).map((model) => (
+            <ModelUsageRow
+              key={model.modelName}
+              locale={locale}
+              model={model}
+              maxTokens={maxTokens}
+              state={usageState}
+              onClick={() => onDetail(model.modelName)}
+            />
+          ))}
+        </div>
+      )}
 
-      <UsageChart usage={usage} state={usageState} error={usageError} />
+      <UsageChart locale={locale} usage={usage} state={usageState} error={usageError} />
     </section>
   );
 }
 
 function BalanceCard({
+  locale,
   balance,
   state,
   error,
-  todayCost,
-  monthCost,
+  todayTokens,
+  total7d,
 }: {
-  balance: BalanceData | null;
+  locale: Locale;
+  balance: BalanceView | null;
   state: BalanceState;
   error: string;
-  todayCost: number | null;
-  monthCost: number | null;
+  todayTokens: number | null;
+  total7d: number | null;
 }) {
-  const symbol = balance?.currency === "USD" ? "$" : "¥";
+  const isLow = balance?.isLow ?? false;
   const amount =
     state === "loading"
-      ? "查询中…"
+      ? t(locale, "querying")
       : state === "nokey"
-        ? "未配置"
+        ? t(locale, "noAccessToken")
         : state === "error"
-          ? "查询失败"
-          : `${symbol}${balance?.totalBalance ?? "0.00"}`;
-  const statusText = state === "ok" ? (balance?.isAvailable ? "可用" : "余额不足") : "—";
-  const statusOff = state === "ok" && balance != null && !balance.isAvailable;
+          ? t(locale, "queryFailed")
+          : fmtMoney(balance?.remainingCny ?? 0);
+  const statusText =
+    state === "ok" ? (isLow ? t(locale, "lowBalance") : t(locale, "available")) : "—";
 
   return (
-    <article className="card balance-card">
+    <article className={`card balance-card${isLow && state === "ok" ? " balance-low" : ""}`}>
       <div className="card-title-row">
         <div className="caption-with-icon">
           <CreditCard size={15} />
-          <span>账户余额</span>
+          <span>{t(locale, "accountBalance")}</span>
         </div>
-        <div className={`status-pill ${statusOff ? "off" : ""}`}>
+        <div className={`status-pill${isLow && state === "ok" ? " off" : ""}`}>
           <span />
           {statusText}
         </div>
       </div>
-      <div className={`balance-amount ${state !== "ok" ? "balance-dim" : ""}`}>{amount}</div>
-      {state === "error" && <div className="balance-error">{error}</div>}
+      <div className={`balance-amount balance-value ${state !== "ok" ? "balance-dim" : ""}`}>{amount}</div>
+      {state === "error" && error && <div className="balance-error">{error}</div>}
+      {balance?.cachedAt != null && state === "ok" && (
+        <p className="cached-hint">
+          {t(locale, "cachedAt")}: {fmtCachedAt(balance.cachedAt)}
+        </p>
+      )}
       <div className="metric-grid">
         <div className="mini-card">
           <div className="caption-with-icon orange">
             <SunMedium size={15} />
-            <span>当日消耗</span>
+            <span>{t(locale, "todayTokens")}</span>
           </div>
-          <strong>{todayCost != null ? fmtMoney(todayCost) : "—"}</strong>
+          <strong>{todayTokens != null ? fmtInt(todayTokens) : "—"}</strong>
         </div>
         <div className="mini-card">
           <div className="caption-with-icon orange">
             <CalendarDays size={15} />
-            <span>本月消费</span>
+            <span>{t(locale, "total7d")}</span>
           </div>
-          <strong>{monthCost != null ? fmtMoney(monthCost) : "—"}</strong>
+          <strong>{total7d != null ? fmtInt(total7d) : "—"}</strong>
         </div>
       </div>
     </article>
   );
 }
 
-function UsageRow({
-  modelKey,
-  data,
+function ModelUsageRow({
+  locale,
+  model,
   maxTokens,
   state,
   onClick,
 }: {
-  modelKey: ModelName;
-  data: UsageModel | null;
+  locale: Locale;
+  model: ModelUsageView;
   maxTokens: number;
   state: BalanceState;
   onClick: () => void;
 }) {
-  const isFlash = modelKey === "flash";
-  const name = isFlash ? "V4 Flash" : "V4 Pro";
-  const tokensText = data
-    ? `${fmtInt(data.totalTokens)} Tokens`
-    : state === "loading"
-      ? "查询中…"
+  const tokensText =
+    state === "loading"
+      ? t(locale, "querying")
       : state === "nokey"
-        ? "未配置 Token"
+        ? t(locale, "noAccessToken")
         : state === "error"
-          ? "用量不可用"
-          : "—";
-  const cost = data ? fmtMoney(data.cost) : "—";
-  const ratio = data && data.cost > 0 ? `${fmtTokensShort(data.totalTokens / data.cost)} T/¥` : "—";
-  const width = data ? `${Math.max(2, (data.totalTokens / maxTokens) * 100)}%` : "0%";
+          ? t(locale, "usageUnavailable")
+          : `${fmtInt(model.totalTokens)} ${t(locale, "tokens")}`;
+  const width = `${Math.max(2, (model.totalTokens / maxTokens) * 100)}%`;
 
   return (
-    <button className="card usage-row" onClick={onClick}>
-      <div className={`model-badge ${isFlash ? "flash" : "pro"}`}>
-        {isFlash ? <Zap size={27} fill="currentColor" /> : <Brain size={25} />}
+    <button className="card usage-row" type="button" onClick={onClick}>
+      <div className="model-badge relay">
+        <Brain size={24} />
       </div>
       <div className="usage-main">
-        <h2>{name}</h2>
+        <h2>{model.modelName}</h2>
         <div className="token-line">
           <span>{tokensText}</span>
           <div className="progress-track">
-            <i className={isFlash ? "flash-fill" : "pro-fill"} style={{ width }} />
+            <i className="relay-fill" style={{ width }} />
           </div>
         </div>
-        {data && data.cacheHitTokens + data.cacheMissTokens > 0 && (
-          <span className={`cache-hit-rate ${isFlash ? "flash" : "pro"}`}>
-            缓存命中{" "}
-            {((data.cacheHitTokens / (data.cacheHitTokens + data.cacheMissTokens)) * 100).toFixed(0)}%
-          </span>
-        )}
       </div>
       <div className="usage-price">
-        <strong>{cost}</strong>
-        <span>{ratio}</span>
+        <strong>{fmtInt(model.quota)}</strong>
+        <span>{t(locale, "quotaUsed")}</span>
       </div>
     </button>
   );
 }
 
 function UsageChart({
+  locale,
   usage,
   state,
   error,
 }: {
-  usage: UsageResult | null;
+  locale: Locale;
+  usage: UsageSummaryView | null;
   state: BalanceState;
   error: string;
 }) {
   const [hoveredIdx, setHoveredIdx] = React.useState<number | null>(null);
   const MIN_BAR = 3;
-  const days = recentUsageDays(usage?.days ?? []);
-  const points = days.map((day) => {
-    // Flash 与 Pro 合并，不分模型
-    const hit = day.flashCacheHit + day.proCacheHit;
-    const miss = day.flashCacheMiss + day.proCacheMiss;
-    const response = day.flashResponse + day.proResponse;
-    return { date: day.date, hit, miss, response, total: hit + miss + response };
-  });
-  const maxVal = Math.max(...points.map((point) => point.total), 1);
-  const sumHit = points.reduce((sum, point) => sum + point.hit, 0);
-  const sumMiss = points.reduce((sum, point) => sum + point.miss, 0);
-  const sumTotal = points.reduce((sum, point) => sum + point.total, 0);
-  const hitRate = sumHit + sumMiss > 0 ? ((sumHit / (sumHit + sumMiss)) * 100).toFixed(0) : "0";
+  const points = recentUsageDays(usage?.byDay ?? []);
+  const maxVal = Math.max(...points.map((point) => point.totalTokens), 1);
+  const sumTotal = points.reduce((sum, point) => sum + point.totalTokens, 0);
   const placeholder =
     state === "loading"
-      ? "查询中…"
+      ? t(locale, "querying")
       : state === "nokey"
-        ? "未配置用量 Token"
+        ? t(locale, "noAccessToken")
         : state === "error"
-          ? error
-          : "暂无数据";
+          ? error || t(locale, "usageUnavailable")
+          : t(locale, "noData");
 
   return (
     <article className="card chart-card">
       <div className="card-title-row">
         <div className="caption-with-icon">
           <BarChart3 size={16} className="brand-blue" />
-          <span>缓存命中明细</span>
+          <span>{t(locale, "tokenUsage7d")}</span>
         </div>
         <span className="chart-total">
-          {state === "ok" ? `命中率 ${hitRate}% · 合计 ${fmtTokensShort(sumTotal)}` : "—"}
+          {state === "ok" ? `${t(locale, "total7d")} ${fmtTokensShort(sumTotal)}` : "—"}
         </span>
       </div>
       {state === "ok" && points.length > 0 ? (
-        <>
-          <div className="bars" onMouseLeave={() => setHoveredIdx(null)}>
-            {points.map((point, idx) => (
-              <div className="bar-column" key={point.date}>
-                {hoveredIdx === idx && point.total > 0 && (
-                  <div
-                    className={`bar-tooltip${
-                      idx <= 1 ? " align-left" : idx >= points.length - 2 ? " align-right" : ""
-                    }`}
-                  >
-                    <div className="bar-tooltip-head">
-                      <span className="bar-tooltip-date">{point.date}</span>
-                      <strong>{fmtInt(point.total)} tokens</strong>
-                    </div>
-                    <span className="bar-tooltip-row">
-                      <i className="dot hit" />输入（命中缓存）
-                      <strong>{fmtInt(point.hit)} tokens</strong>
-                    </span>
-                    <span className="bar-tooltip-row">
-                      <i className="dot miss" />输入（未命中缓存）
-                      <strong>{fmtInt(point.miss)} tokens</strong>
-                    </span>
-                    <span className="bar-tooltip-row">
-                      <i className="dot response" />输出
-                      <strong>{fmtInt(point.response)} tokens</strong>
-                    </span>
-                  </div>
-                )}
-                <span className="bar-value">
-                  {point.total > 0 ? fmtTokensShort(point.total) : "0"}
-                </span>
-                <div className="bar-slot">
-                  <div
-                    className="cache-bar"
-                    style={{
-                      height: `${point.total > 0 ? Math.max(MIN_BAR, (point.total / maxVal) * 100) : MIN_BAR}%`,
-                    }}
-                    onMouseEnter={() => setHoveredIdx(idx)}
-                    onMouseLeave={() => setHoveredIdx(null)}
-                  >
-                    {point.total > 0 ? (
-                      <>
-                        {point.hit > 0 && <i className="seg hit" style={{ flexGrow: point.hit }} />}
-                        {point.miss > 0 && <i className="seg miss" style={{ flexGrow: point.miss }} />}
-                        {point.response > 0 && (
-                          <i className="seg response" style={{ flexGrow: point.response }} />
-                        )}
-                      </>
-                    ) : (
-                      <i className="seg empty" />
-                    )}
+        <div className="bars" onMouseLeave={() => setHoveredIdx(null)}>
+          {points.map((point, idx) => (
+            <div className="bar-column" key={point.date}>
+              {hoveredIdx === idx && point.totalTokens > 0 && (
+                <div
+                  className={`bar-tooltip${
+                    idx <= 1 ? " align-left" : idx >= points.length - 2 ? " align-right" : ""
+                  }`}
+                >
+                  <div className="bar-tooltip-head">
+                    <span className="bar-tooltip-date">{point.date}</span>
+                    <strong>
+                      {fmtInt(point.totalTokens)} {t(locale, "tokens").toLowerCase()}
+                    </strong>
                   </div>
                 </div>
-                <span className="bar-day">{mmdd(point.date)}</span>
+              )}
+              <span className="bar-value">
+                {point.totalTokens > 0 ? fmtTokensShort(point.totalTokens) : "0"}
+              </span>
+              <div className="bar-slot">
+                <div
+                  className="token-bar"
+                  style={{
+                    height: `${point.totalTokens > 0 ? Math.max(MIN_BAR, (point.totalTokens / maxVal) * 100) : MIN_BAR}%`,
+                  }}
+                  onMouseEnter={() => setHoveredIdx(idx)}
+                  onMouseLeave={() => setHoveredIdx(null)}
+                />
               </div>
-            ))}
-          </div>
-          <div className="chart-legend-bottom">
-            <span className="chart-legend-item">
-              <i className="dot hit" />命中
-            </span>
-            <span className="chart-legend-item">
-              <i className="dot miss" />未命中
-            </span>
-            <span className="chart-legend-item">
-              <i className="dot response" />输出
-            </span>
-          </div>
-        </>
+              <span className="bar-day">{mmdd(point.date)}</span>
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="chart-placeholder">{placeholder}</div>
       )}
     </article>
+  );
+}
+
+function KeysPanel({ locale, onBack }: { locale: Locale; onBack: () => void }) {
+  const [keys, setKeys] = React.useState<StoredKeyView[]>([]);
+  const [currentKeyId, setCurrentKeyId] = React.useState<string | undefined>();
+  const [status, setStatus] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [name, setName] = React.useState("");
+  const [sk, setSk] = React.useState("");
+  const [note, setNote] = React.useState("");
+  const [showSk, setShowSk] = React.useState(false);
+
+  const applyConfig = React.useCallback((raw: AppConfigView) => {
+    const next = normalizeConfig(raw);
+    setKeys(next.keys);
+    setCurrentKeyId(next.currentKeyId);
+    if (next.currentKeyId) {
+      setSelectedId(next.currentKeyId);
+    } else if (next.keys.length > 0) {
+      setSelectedId(next.keys[0].id);
+    } else {
+      setSelectedId(null);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void invoke<AppConfigView>("get_app_config")
+      .then(applyConfig)
+      .catch(() => setStatus(t(locale, "previewMode")));
+  }, [applyConfig, locale]);
+
+  const addKey = React.useCallback(() => {
+    if (!sk.trim()) {
+      setStatus(t(locale, "keySk"));
+      return;
+    }
+    setBusy(true);
+    setStatus(t(locale, "saving"));
+    void invoke<AppConfigView>("add_key", {
+      name: name.trim(),
+      sk: sk.trim(),
+      note: note.trim(),
+    })
+      .then((raw) => {
+        applyConfig(raw);
+        setName("");
+        setSk("");
+        setNote("");
+        setStatus(t(locale, "keyAdded"));
+      })
+      .catch((error) => {
+        setStatus(typeof error === "string" ? error : t(locale, "probeFailed"));
+      })
+      .finally(() => setBusy(false));
+  }, [applyConfig, locale, name, note, sk]);
+
+  const syncKeys = React.useCallback(() => {
+    setBusy(true);
+    setStatus(t(locale, "syncingKeys"));
+    void invoke<SyncKeysResult>("sync_keys_from_panel")
+      .then((result) => {
+        setStatus(tf(locale, "syncAdded", { n: result.added }));
+        return invoke<AppConfigView>("get_app_config");
+      })
+      .then((raw) => {
+        if (raw) applyConfig(raw);
+      })
+      .catch((error) => {
+        const message = typeof error === "string" ? error : t(locale, "probeFailed");
+        setStatus(
+          message.toLowerCase().includes("unauthorized")
+            ? t(locale, "unauthorized")
+            : message,
+        );
+      })
+      .finally(() => setBusy(false));
+  }, [applyConfig, locale]);
+
+  const deleteSelected = React.useCallback(() => {
+    if (!selectedId) {
+      setStatus(t(locale, "selectKey"));
+      return;
+    }
+    setBusy(true);
+    void invoke<AppConfigView>("delete_key", { id: selectedId })
+      .then((raw) => {
+        applyConfig(raw);
+        setStatus(t(locale, "keyDeleted"));
+      })
+      .catch((error) => {
+        setStatus(typeof error === "string" ? error : t(locale, "probeFailed"));
+      })
+      .finally(() => setBusy(false));
+  }, [applyConfig, locale, selectedId]);
+
+  const setCurrent = React.useCallback(() => {
+    if (!selectedId) {
+      setStatus(t(locale, "selectKey"));
+      return;
+    }
+    setBusy(true);
+    void invoke<AppConfigView>("set_current_key", { id: selectedId })
+      .then((raw) => {
+        applyConfig(raw);
+        setStatus(t(locale, "currentKey"));
+      })
+      .catch((error) => {
+        setStatus(typeof error === "string" ? error : t(locale, "probeFailed"));
+      })
+      .finally(() => setBusy(false));
+  }, [applyConfig, locale, selectedId]);
+
+  const refreshSelected = React.useCallback(() => {
+    if (!selectedId) {
+      setStatus(t(locale, "selectKey"));
+      return;
+    }
+    setBusy(true);
+    setStatus(t(locale, "refreshingKey"));
+    void invoke<KeyUsageView>("refresh_key_usage", { id: selectedId })
+      .then((usage) => {
+        setKeys((prev) =>
+          prev.map((key) =>
+            key.id === selectedId
+              ? {
+                  ...key,
+                  lastKnownRemaining: usage.unlimitedQuota
+                    ? undefined
+                    : usage.remainingCny >= 0
+                      ? usage.remainingCny
+                      : key.lastKnownRemaining,
+                  name: usage.name || key.name,
+                }
+              : key,
+          ),
+        );
+        setStatus(
+          usage.unlimitedQuota
+            ? `${t(locale, "remaining")}: ${t(locale, "unlimited")}`
+            : `${t(locale, "remaining")}: ${fmtMoney(usage.remainingCny)}`,
+        );
+        return invoke<AppConfigView>("get_app_config");
+      })
+      .then((raw) => {
+        if (raw) applyConfig(raw);
+      })
+      .catch((error) => {
+        const message = typeof error === "string" ? error : t(locale, "probeFailed");
+        setStatus(
+          message.toLowerCase().includes("unauthorized")
+            ? t(locale, "unauthorized")
+            : message,
+        );
+      })
+      .finally(() => setBusy(false));
+  }, [applyConfig, locale, selectedId]);
+
+  const formatRemaining = (key: StoredKeyView) => {
+    if (key.lastKnownRemaining == null) return "—";
+    if (!Number.isFinite(key.lastKnownRemaining)) return t(locale, "unlimited");
+    return fmtMoney(key.lastKnownRemaining);
+  };
+
+  return (
+    <section className="settings-panel keys-panel" data-testid="keys-panel">
+      <button className="floating-close settings-close" onClick={onBack} aria-label={t(locale, "back")}>
+        <X size={20} />
+      </button>
+      <div className="settings-inner">
+        <header className="settings-header" data-tauri-drag-region>
+          <BrandIcon size={42} />
+          <div>
+            <h1>{t(locale, "keys")}</h1>
+            <p>{t(locale, "appName")}</p>
+          </div>
+        </header>
+
+        <SettingsSection icon={<Plus size={15} />} title={t(locale, "addKey")}>
+          <div className="key-row">
+            <input
+              aria-label={t(locale, "keyName")}
+              placeholder={t(locale, "keyName")}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <div className="key-row password-row">
+            <input
+              aria-label={t(locale, "keySk")}
+              type={showSk ? "text" : "password"}
+              placeholder="sk-..."
+              value={sk}
+              onChange={(event) => setSk(event.target.value)}
+            />
+            <button
+              type="button"
+              className="ghost-toggle"
+              onClick={() => setShowSk((value) => !value)}
+              aria-label={showSk ? t(locale, "hideToken") : t(locale, "showToken")}
+            >
+              {showSk ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          <div className="key-row">
+            <input
+              aria-label={t(locale, "keyNote")}
+              placeholder={t(locale, "keyNote")}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </div>
+          <div className="settings-actions keys-toolbar">
+            <button className="primary" type="button" onClick={addKey} disabled={busy}>
+              {t(locale, "addKey")}
+            </button>
+            <button className="secondary" type="button" onClick={syncKeys} disabled={busy}>
+              <CloudDownload size={14} />
+              {t(locale, "syncKeys")}
+            </button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection icon={<KeyRound size={15} />} title={t(locale, "keys")}>
+          {keys.length === 0 ? (
+            <p className="muted">{t(locale, "noKeys")}</p>
+          ) : (
+            <ul className="key-list">
+              {keys.map((key) => {
+                const selected = selectedId === key.id;
+                const current = currentKeyId === key.id;
+                return (
+                  <li key={key.id}>
+                    <button
+                      type="button"
+                      className={`key-list-item${selected ? " selected" : ""}${current ? " current" : ""}`}
+                      onClick={() => setSelectedId(key.id)}
+                    >
+                      <div className="key-list-main">
+                        <strong>
+                          {key.name}
+                          {current && <span className="current-badge">{t(locale, "currentKey")}</span>}
+                        </strong>
+                        <span className="key-masked">{key.skMasked}</span>
+                        {key.note && <span className="key-note">{key.note}</span>}
+                      </div>
+                      <div className="key-list-meta">
+                        <span>
+                          {t(locale, "remaining")}: {formatRemaining(key)}
+                        </span>
+                        <span className={key.enabled ? "key-enabled" : "key-disabled"}>
+                          {key.enabled ? t(locale, "enabled") : t(locale, "disabled")}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="settings-actions keys-toolbar">
+            <button className="secondary" type="button" onClick={setCurrent} disabled={busy || !selectedId}>
+              <Star size={14} />
+              {t(locale, "setCurrent")}
+            </button>
+            <button className="secondary" type="button" onClick={refreshSelected} disabled={busy || !selectedId}>
+              <RefreshCw size={14} />
+              {t(locale, "refreshKeyUsage")}
+            </button>
+            <button className="secondary danger" type="button" onClick={deleteSelected} disabled={busy || !selectedId}>
+              <Trash2 size={14} />
+              {t(locale, "deleteKey")}
+            </button>
+          </div>
+        </SettingsSection>
+
+        <p className="muted status-line">{status}</p>
+      </div>
+    </section>
   );
 }
 
@@ -920,136 +1195,64 @@ function Toggle({
 }
 
 function ModelDetailPanel({
-  model,
+  locale,
+  modelName,
   usage,
   usageState,
   onBack,
 }: {
-  model: ModelName;
-  usage: UsageResult | null;
+  locale: Locale;
+  modelName: string;
+  usage: UsageSummaryView | null;
   usageState: BalanceState;
   onBack: () => void;
 }) {
-  const isFlash = model === "flash";
-  const data = usage?.models.find((item) => item.key === model) ?? null;
-  const title = isFlash ? "V4 Flash" : "V4 Pro";
-  const tintClass = isFlash ? "flash" : "pro";
-  const cost = data ? fmtMoney(data.cost) : "—";
+  const data = usage?.byModel.find((item) => item.modelName === modelName) ?? null;
   const totalText = data ? fmtTokensShort(data.totalTokens) : "—";
-
-  const days = recentUsageDays(usage?.days ?? []);
-  const points = days.map((day) => {
-    const hit = isFlash ? day.flashCacheHit : day.proCacheHit;
-    const miss = isFlash ? day.flashCacheMiss : day.proCacheMiss;
-    const response = isFlash ? day.flashResponse : day.proResponse;
-    return { date: day.date, hit, miss, response, total: hit + miss + response };
-  });
-  const maxVal = Math.max(...points.map((point) => point.total), 1);
-  const rangeText =
-    points.length > 0 ? `${mmdd(points[0].date)} - ${mmdd(points[points.length - 1].date)}` : "";
-
-  const [hoveredIdx, setHoveredIdx] = React.useState<number | null>(null);
-  const MIN_BAR = 3; // 整根柱子的最小可见高度百分比（含空数据占位）
+  const quotaText = data ? fmtInt(data.quota) : "—";
 
   return (
     <section className="panel detail-panel" data-testid="detail-panel">
-      <button className="floating-close" onClick={onBack} aria-label="返回主面板">
+      <button className="floating-close" onClick={onBack} aria-label={t(locale, "back")}>
         <X size={20} />
       </button>
       <article className="card detail-hero" data-tauri-drag-region>
-        <div className={`model-badge large ${tintClass}`}>
-          {isFlash ? <Zap size={34} fill="currentColor" /> : <Brain size={33} />}
+        <div className="model-badge large relay">
+          <Brain size={33} />
         </div>
         <div>
-          <h1>{title}</h1>
-          <p>{cost}</p>
+          <h1>{modelName}</h1>
+          <p>{t(locale, "modelDetail")}</p>
         </div>
       </article>
 
       <div className="detail-metrics">
         <article className="card metric-card">
-          <span>API 请求次数</span>
-          <strong className={tintClass}>{data ? fmtInt(data.requestCount) : "—"}</strong>
+          <span>{t(locale, "tokens")}</span>
+          <strong className="relay">{totalText}</strong>
         </article>
         <article className="card metric-card">
-          <span>Tokens</span>
-          <strong className={tintClass}>{totalText}</strong>
+          <span>{t(locale, "quotaUsed")}</span>
+          <strong className="relay">{quotaText}</strong>
         </article>
       </div>
 
       <article className="card detail-chart">
         <div className="detail-chart-head">
           <div>
-            <h2>按日 Token 消耗</h2>
-            <span>{rangeText}</span>
+            <h2>{t(locale, "usageByModel")}</h2>
+            <span>{t(locale, "total7d")}</span>
           </div>
         </div>
-        {usageState === "ok" && points.length > 0 ? (
-          <>
-            <div className="detail-bars" onMouseLeave={() => setHoveredIdx(null)}>
-              {points.map((point, idx) => (
-                <div className="detail-bar-column" key={point.date}>
-                  {hoveredIdx === idx && point.total > 0 && (
-                    <div
-                      className={`bar-tooltip${
-                        idx <= 1 ? " align-left" : idx >= points.length - 2 ? " align-right" : ""
-                      }`}
-                    >
-                      <div className="bar-tooltip-head">
-                        <span className="bar-tooltip-date">{point.date}</span>
-                        <strong>{fmtInt(point.total)} tokens</strong>
-                      </div>
-                      <span className="bar-tooltip-row">
-                        <i className="dot hit" />输入（命中缓存）
-                        <strong>{fmtInt(point.hit)} tokens</strong>
-                      </span>
-                      <span className="bar-tooltip-row">
-                        <i className="dot miss" />输入（未命中缓存）
-                        <strong>{fmtInt(point.miss)} tokens</strong>
-                      </span>
-                      <span className="bar-tooltip-row">
-                        <i className="dot response" />输出
-                        <strong>{fmtInt(point.response)} tokens</strong>
-                      </span>
-                    </div>
-                  )}
-                  <span>{point.total > 0 ? fmtTokensShort(point.total) : ""}</span>
-                  <div className="detail-bar-slot">
-                    {/* 柱高按当天合计占最大值的比例；内部三段用 flex-grow 按真实 token 数分配，比例精确且永不溢出裁剪 */}
-                    <div
-                      className="detail-bar-stacked"
-                      style={{
-                        height: `${point.total > 0 ? Math.max(MIN_BAR, (point.total / maxVal) * 100) : MIN_BAR}%`,
-                      }}
-                      onMouseEnter={() => setHoveredIdx(idx)}
-                      onMouseLeave={() => setHoveredIdx(null)}
-                    >
-                      {point.total > 0 ? (
-                        <>
-                          {point.hit > 0 && <i className="seg hit" style={{ flexGrow: point.hit }} />}
-                          {point.miss > 0 && <i className="seg miss" style={{ flexGrow: point.miss }} />}
-                          {point.response > 0 && <i className="seg response" style={{ flexGrow: point.response }} />}
-                        </>
-                      ) : (
-                        <i className="seg empty" />
-                      )}
-                    </div>
-                  </div>
-                  <em>{mmdd(point.date)}</em>
-                </div>
-              ))}
-            </div>
-            <div className="chart-legend-bottom">
-              <span className="chart-legend-item"><i className="dot hit" />命中</span>
-              <span className="chart-legend-item"><i className="dot miss" />未命中</span>
-              <span className="chart-legend-item"><i className="dot response" />输出</span>
-            </div>
-          </>
-        ) : (
-          <div className="chart-placeholder">
-            {usageState === "nokey" ? "未配置用量 Token" : usageState === "loading" ? "查询中…" : "暂无数据"}
-          </div>
-        )}
+        <div className="chart-placeholder">
+          {usageState === "nokey"
+            ? t(locale, "noAccessToken")
+            : usageState === "loading"
+              ? t(locale, "querying")
+              : data
+                ? `${fmtInt(data.totalTokens)} ${t(locale, "tokens")}`
+                : t(locale, "noData")}
+        </div>
       </article>
     </section>
   );

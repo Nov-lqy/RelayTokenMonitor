@@ -30,5 +30,34 @@ export interface BalanceView {
   usedQuota: number;
   isLow: boolean;
   error?: string;
-  cachedAt?: string;
+  cachedAt?: number | string;
+}
+
+export interface DayUsageView {
+  date: string;
+  totalTokens: number;
+}
+
+export interface ModelUsageView {
+  modelName: string;
+  totalTokens: number;
+  quota: number;
+}
+
+export interface UsageSummaryView {
+  byDay: DayUsageView[];
+  byModel: ModelUsageView[];
+}
+
+export interface SyncKeysResult {
+  added: number;
+}
+
+export interface KeyUsageView {
+  remainingCny: number;
+  name: string;
+  totalGranted: number;
+  totalUsed: number;
+  totalAvailable: number;
+  unlimitedQuota: boolean;
 }

@@ -80,12 +80,13 @@ pub fn run() {
                 let _ = commands::apply_autostart(true);
             }
 
-            let show_item = MenuItem::with_id(app, "show", "显示主面板", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Show / 显示", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit / 退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&tray_menu)
+                .tooltip("RelayTokenMonitor")
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
