@@ -136,6 +136,36 @@ pub fn fetch_remote_tokens(base: &str, access_token: &str) -> Result<Vec<RemoteT
     Ok(out)
 }
 
+/// Merge remote tokens into local keys by sk; never delete local-only keys.
+pub fn merge_remote_keys(
+    local: &mut Vec<crate::config::StoredKey>,
+    remote: &[RemoteToken],
+) -> usize {
+    let mut added = 0;
+    for r in remote {
+        if r.key.is_empty() {
+            continue;
+        }
+        if local.iter().any(|k| k.sk == r.key) {
+            continue;
+        }
+        local.push(crate::config::StoredKey {
+            id: format!("remote-{}", r.id),
+            name: if r.name.is_empty() {
+                format!("token-{}", r.id)
+            } else {
+                r.name.clone()
+            },
+            sk: r.key.clone(),
+            note: "synced".into(),
+            enabled: r.status == 1,
+            last_known_remaining: Some(r.remain_quota as f64),
+        });
+        added += 1;
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
