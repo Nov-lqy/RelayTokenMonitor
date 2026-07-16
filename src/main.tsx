@@ -56,6 +56,7 @@ function normalizeConfig(raw: AppConfigView): AppConfigView {
   return {
     ...raw,
     accessTokenMasked: raw.accessTokenMasked ?? "",
+    userId: raw.userId ?? "",
     locale: normalizeLocale(raw.locale),
   };
 }
@@ -283,9 +284,35 @@ function App() {
 }
 
 function BrandIcon({ size = 32 }: { size?: number }) {
+  const uid = React.useId().replace(/:/g, "");
+  const hubId = `relayHub-${uid}`;
   return (
-    <div className="brand-icon relay-brand-icon" style={{ width: size, height: size }}>
-      <KeyRound size={Math.round(size * 0.52)} className="brand-blue" />
+    <div className="brand-icon relay-brand-icon" style={{ width: size, height: size }} aria-hidden>
+      <svg viewBox="0 0 128 128" width="100%" height="100%" fill="none">
+        <defs>
+          <linearGradient id={hubId} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#6b85ff" />
+            <stop offset="100%" stopColor="#4d6bfe" />
+          </linearGradient>
+        </defs>
+        <circle cx="22" cy="64" r="12" fill="#e8ecff" />
+        <circle cx="106" cy="64" r="12" fill="#e8ecff" />
+        <path
+          d="M36 54 C46 34, 82 34, 92 54"
+          stroke="#6b85ff"
+          strokeWidth="5.5"
+          strokeLinecap="round"
+        />
+        <path
+          d="M36 74 C46 94, 82 94, 92 74"
+          stroke="#6b85ff"
+          strokeWidth="5.5"
+          strokeLinecap="round"
+          opacity="0.55"
+        />
+        <circle cx="64" cy="64" r="22" fill={`url(#${hubId})`} />
+        <circle cx="64" cy="64" r="9" fill="#ffffff" />
+      </svg>
     </div>
   );
 }
@@ -898,6 +925,7 @@ function SettingsPanel({
   const [busy, setBusy] = React.useState(false);
   const [baseUrl, setBaseUrl] = React.useState("");
   const [accessToken, setAccessToken] = React.useState("");
+  const [userId, setUserId] = React.useState("");
   const [showToken, setShowToken] = React.useState(false);
   const [refresh, setRefresh] = React.useState(60);
   const [autoRefresh, setAutoRefresh] = React.useState(false);
@@ -920,6 +948,7 @@ function SettingsPanel({
         const next = normalizeConfig(raw);
         setConfig(next);
         setBaseUrl(next.baseUrl || "");
+        setUserId(next.userId || "");
         setRefresh(next.refreshIntervalSeconds || 60);
         setAutoRefresh(next.autoRefreshEnabled);
         setThreshold(next.lowBalanceThreshold ?? 5);
@@ -950,6 +979,7 @@ function SettingsPanel({
       const normalized = normalizeConfig(next);
       setConfig(normalized);
       setBaseUrl(normalized.baseUrl || "");
+      setUserId(normalized.userId || "");
       setRefresh(normalized.refreshIntervalSeconds || 60);
       setAutoRefresh(normalized.autoRefreshEnabled);
       setThreshold(normalized.lowBalanceThreshold ?? 5);
@@ -968,6 +998,7 @@ function SettingsPanel({
     void invoke<AppConfigView>("save_settings", {
       baseUrl,
       accessToken,
+      userId,
       refreshIntervalSeconds: refresh,
       autoRefreshEnabled: autoRefresh,
       lowBalanceThreshold: threshold,
@@ -983,7 +1014,17 @@ function SettingsPanel({
         setStatus(typeof error === "string" ? error : t(localLocale, "probeFailed"));
       })
       .finally(() => setBusy(false));
-  }, [accessToken, applyConfig, autoRefresh, autostart, baseUrl, localLocale, refresh, threshold]);
+  }, [
+    accessToken,
+    applyConfig,
+    autoRefresh,
+    autostart,
+    baseUrl,
+    localLocale,
+    refresh,
+    threshold,
+    userId,
+  ]);
 
   const probeConnection = React.useCallback(() => {
     setBusy(true);
@@ -1069,6 +1110,21 @@ function SettingsPanel({
               <CheckCircle2 size={17} />
               {config?.hasAccessToken ? t(localLocale, "configured") : t(localLocale, "notConfigured")}
             </span>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection icon={<Info size={15} />} title={t(localLocale, "userId")}>
+          <p className="muted">{t(localLocale, "userIdHelper")}</p>
+          <div className="key-row">
+            <input
+              aria-label={t(localLocale, "userId")}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={userId}
+              placeholder="123"
+              onChange={(event) => setUserId(event.target.value)}
+            />
           </div>
         </SettingsSection>
 

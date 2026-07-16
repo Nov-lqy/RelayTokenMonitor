@@ -32,4 +32,15 @@
 ## 可选后续
 
 1. 本机安装一次安装包做二次冒烟（托盘弹出 / 设置 Access Token）
-2. 需要时替换占位图标
+
+## Logo（2026-07-16）
+
+按 `docs/superpowers/specs/2026-07-16-relay-logo-design.md` / `docs/superpowers/plans/2026-07-16-relay-logo.md`：
+
+- 源 SVG：`assets/brand/relay-mark.svg`（+ 16px 简化版）
+- 托盘 / NSIS：`src-tauri/icons/*` 已用 `tauri icon` 从 1024 master 重生
+- 应用内 `BrandIcon` 已换成双弧中转 mark（无底板）
+
+## 修复记录
+
+- **2026-07-16：** CCTQ/New API 管理接口需 `New-Api-User` 数字用户 ID；设置页增加「用户 ID」，请求头自动携带。
