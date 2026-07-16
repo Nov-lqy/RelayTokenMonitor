@@ -600,6 +600,55 @@ button {
   letter-spacing: 2px;
 }
 
+.password-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.password-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ghost-toggle {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  background: rgba(24, 23, 19, 0.55);
+  color: rgba(var(--fg), 0.88);
+  cursor: pointer;
+}
+
+.threshold-row input {
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.locale-segmented {
+  grid-template-columns: 1fr 1fr;
+}
+
+.settings-footer-actions {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.status-line {
+  margin: 0 0 8px;
+  min-height: 1.4em;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .key-row button,
 .secondary,
 .back-button {
@@ -1210,6 +1259,11 @@ button:disabled {
   border-color: rgba(40, 70, 100, 0.18);
   background: rgba(255, 255, 255, 0.72);
   color: #1a2a40;
+}
+[data-theme="light"] .ghost-toggle {
+  border-color: rgba(40, 70, 100, 0.18);
+  background: rgba(255, 255, 255, 0.65);
+  color: rgba(22, 42, 64, 0.82);
 }
 [data-theme="light"] .configured {
   color: #16a34a;

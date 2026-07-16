@@ -1,17 +1,19 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   BarChart3,
   Brain,
   CalendarDays,
   CheckCircle2,
-  Clipboard,
   CreditCard,
+  Eye,
+  EyeOff,
+  Globe,
   Info,
   KeyRound,
+  Link2,
   Power,
   RefreshCw,
   Settings,
@@ -20,19 +22,15 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { t } from "./i18n";
+import type { AppConfigView, BalanceView, Locale } from "./types";
 import "./styles.css";
 
 type ViewName = "dashboard" | "settings" | "detail";
 type ModelName = "flash" | "pro";
-type AppConfig = {
-  apiKeyConfigured: boolean;
-  apiKeyPreview: string | null;
-  usageTokenConfigured: boolean;
-  refreshIntervalSeconds: number;
-  autoRefreshEnabled: boolean;
-  autostart: boolean;
-  configPath: string;
-};
+type BalanceState = "loading" | "ok" | "error" | "nokey";
+
+/** Temporary dashboard shape until Task 8 rewires the home view. */
 type BalanceData = {
   isAvailable: boolean;
   currency: string;
@@ -40,8 +38,6 @@ type BalanceData = {
   grantedBalance: string;
   toppedUpBalance: string;
 };
-type BalanceState = "loading" | "ok" | "error" | "nokey";
-
 type UsageModel = {
   key: string;
   name: string;
@@ -70,6 +66,24 @@ type UsageResult = {
   days: UsageDay[];
   monthCost: number;
 };
+
+type ProbeResult = {
+  userSelfOk: boolean;
+  sampleKeyOk: boolean;
+  messages: string[];
+};
+
+function normalizeLocale(value: string | undefined): Locale {
+  return value === "en" ? "en" : "zh";
+}
+
+function normalizeConfig(raw: AppConfigView): AppConfigView {
+  return {
+    ...raw,
+    accessTokenMasked: raw.accessTokenMasked ?? "",
+    locale: normalizeLocale(raw.locale),
+  };
+}
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmtTokensShort = (n: number) => {
@@ -116,38 +130,7 @@ const recentUsageDays = (days: UsageDay[], count = 7): UsageDay[] => {
     );
   });
 };
-const previousMonth = (date: Date) => {
-  const previous = new Date(date.getFullYear(), date.getMonth() - 1, 1);
-  return { month: previous.getMonth() + 1, year: previous.getFullYear() };
-};
-const fetchMonthUsage = (month: number, year: number) => {
-  return invoke<UsageResult>("fetch_usage", { month, year });
-};
-const fetchCurrentUsage = async () => {
-  const now = new Date();
-  const current = await fetchMonthUsage(now.getMonth() + 1, now.getFullYear());
-  const needsPreviousMonth = addDays(now, -6).getMonth() !== now.getMonth();
-  if (!needsPreviousMonth) {
-    return current;
-  }
-  try {
-    const previous = previousMonth(now);
-    const previousUsage = await fetchMonthUsage(previous.month, previous.year);
-    return {
-      ...current,
-      days: [...previousUsage.days, ...current.days],
-    };
-  } catch {
-    return current;
-  }
-};
-
-const refreshOptions = [
-  { label: "1 分钟", value: 60 },
-  { label: "5 分钟", value: 300 },
-  { label: "30 分钟", value: 1800 },
-  { label: "1 小时", value: 3600 },
-];
+const refreshIntervalValues = [60, 300, 1800, 3600] as const;
 
 function App() {
   const [view, setView] = React.useState<ViewName>("dashboard");
@@ -158,39 +141,53 @@ function App() {
   const [balanceError, setBalanceError] = React.useState("");
 
   const [usage, setUsage] = React.useState<UsageResult | null>(null);
-  const [usageState, setUsageState] = React.useState<BalanceState>("loading");
+  const [usageState, setUsageState] = React.useState<BalanceState>("nokey");
   const [usageError, setUsageError] = React.useState("");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = React.useState(60);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = React.useState(false);
+  const [locale, setLocale] = React.useState<Locale>("zh");
 
   const loadBalance = React.useCallback(() => {
     setBalanceState("loading");
-    void invoke<BalanceData>("fetch_balance")
+    void invoke<BalanceView>("fetch_balance")
       .then((data) => {
-        setBalance(data);
+        if (data.error) {
+          const message =
+            data.error.toLowerCase().includes("unauthorized")
+              ? t(locale, "unauthorized")
+              : data.error;
+          setBalanceError(message);
+          setBalance(null);
+          setBalanceState(
+            data.error.includes("未配置") || data.error.toLowerCase().includes("access token")
+              ? "nokey"
+              : "error",
+          );
+          return;
+        }
+        setBalance({
+          isAvailable: !data.isLow,
+          currency: "CNY",
+          totalBalance: data.remainingCny.toFixed(2),
+          grantedBalance: String(data.quota),
+          toppedUpBalance: String(data.usedQuota),
+        });
+        setBalanceError("");
         setBalanceState("ok");
       })
       .catch((error) => {
         const message = typeof error === "string" ? error : "查询失败";
         setBalanceError(message);
+        setBalance(null);
         setBalanceState(message.includes("未配置") ? "nokey" : "error");
       });
-  }, []);
+  }, [locale]);
 
   const loadUsage = React.useCallback(() => {
-    setUsageState("loading");
-    void fetchCurrentUsage()
-      .then((data) => {
-        setUsage(data);
-        setUsageState("ok");
-        setUsageError("");
-      })
-      .catch((error) => {
-        const message = typeof error === "string" ? error : "查询失败";
-        setUsageError(message);
-        setUsage(null);
-        setUsageState(message.includes("未配置") ? "nokey" : "error");
-      });
+    // Task 8 will wire fetch_usage_summary; keep dashboard from crashing for now.
+    setUsage(null);
+    setUsageError("");
+    setUsageState("nokey");
   }, []);
 
   const refreshAll = React.useCallback(() => {
@@ -203,10 +200,12 @@ function App() {
   }, [refreshAll]);
 
   React.useEffect(() => {
-    void invoke<AppConfig>("get_app_config")
-      .then((config) => {
+    void invoke<AppConfigView>("get_app_config")
+      .then((raw) => {
+        const config = normalizeConfig(raw);
         setRefreshIntervalSeconds(config.refreshIntervalSeconds || 60);
         setAutoRefreshEnabled(config.autoRefreshEnabled);
+        setLocale(config.locale);
       })
       .catch(() => {
         setRefreshIntervalSeconds(60);
@@ -249,16 +248,8 @@ function App() {
       )}
       {view === "settings" && (
         <SettingsPanel
-          onUsageLoaded={(nextUsage) => {
-            setUsage(nextUsage);
-            setUsageState("ok");
-            setUsageError("");
-          }}
-          onUsageCleared={() => {
-            setUsage(null);
-            setUsageState("nokey");
-            setUsageError("未配置用量 Token");
-          }}
+          locale={locale}
+          onLocaleChanged={setLocale}
           onRefreshIntervalChanged={setRefreshIntervalSeconds}
           onAutoRefreshChanged={setAutoRefreshEnabled}
           onBack={() => setView("dashboard")}
@@ -616,364 +607,275 @@ function UsageChart({
 
 function SettingsPanel({
   onBack,
-  onUsageLoaded,
-  onUsageCleared,
+  locale,
+  onLocaleChanged,
   onRefreshIntervalChanged,
   onAutoRefreshChanged,
 }: {
   onBack: () => void;
-  onUsageLoaded: (usage: UsageResult) => void;
-  onUsageCleared: () => void;
+  locale: Locale;
+  onLocaleChanged: (locale: Locale) => void;
   onRefreshIntervalChanged: (seconds: number) => void;
   onAutoRefreshChanged: (enabled: boolean) => void;
 }) {
-  const [apiKey, setApiKey] = React.useState("");
-  const [config, setConfig] = React.useState<AppConfig | null>(null);
-  const [status, setStatus] = React.useState("正在读取本地配置");
+  const [config, setConfig] = React.useState<AppConfigView | null>(null);
+  const [status, setStatus] = React.useState(() => t(locale, "loadingConfig"));
   const [busy, setBusy] = React.useState(false);
+  const [baseUrl, setBaseUrl] = React.useState("");
+  const [accessToken, setAccessToken] = React.useState("");
+  const [showToken, setShowToken] = React.useState(false);
   const [refresh, setRefresh] = React.useState(60);
   const [autoRefresh, setAutoRefresh] = React.useState(false);
+  const [threshold, setThreshold] = React.useState(5);
+  const [localLocale, setLocalLocale] = React.useState<Locale>(locale);
   const [autostart, setAutostart] = React.useState(false);
-  const [usageToken, setUsageToken] = React.useState("");
-  const [usageStatus, setUsageStatus] = React.useState("");
-  const [usageSyncing, setUsageSyncing] = React.useState(false);
-  const [showManualPaste, setShowManualPaste] = React.useState(false);
-  const [appVersion, setAppVersion] = React.useState("1.1.0");
-  const configPath = config?.configPath ?? "%APPDATA%\\DeepSeekMonitorWindows\\config.json";
+  const [appVersion, setAppVersion] = React.useState("0.1.0");
+  const configPath = config?.configPath ?? "%APPDATA%\\RelayTokenMonitor\\config.json";
+
+  const intervalLabels: Record<(typeof refreshIntervalValues)[number], string> = {
+    60: t(localLocale, "interval1m"),
+    300: t(localLocale, "interval5m"),
+    1800: t(localLocale, "interval30m"),
+    3600: t(localLocale, "interval1h"),
+  };
 
   React.useEffect(() => {
-    void invoke<AppConfig>("get_app_config")
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setRefresh(nextConfig.refreshIntervalSeconds || 60);
-        setAutoRefresh(nextConfig.autoRefreshEnabled);
-        setAutostart(nextConfig.autostart);
-        setStatus(nextConfig.apiKeyConfigured ? `已配置 ${nextConfig.apiKeyPreview}` : "未配置 API Key");
-        setUsageStatus(nextConfig.usageTokenConfigured ? "用量 Token 已配置" : "未配置用量 Token");
+    void invoke<AppConfigView>("get_app_config")
+      .then((raw) => {
+        const next = normalizeConfig(raw);
+        setConfig(next);
+        setBaseUrl(next.baseUrl || "");
+        setRefresh(next.refreshIntervalSeconds || 60);
+        setAutoRefresh(next.autoRefreshEnabled);
+        setThreshold(next.lowBalanceThreshold ?? 5);
+        setLocalLocale(next.locale);
+        onLocaleChanged(next.locale);
+        setAutostart(next.autostart);
+        setStatus(
+          next.hasAccessToken
+            ? `${t(next.locale, "configured")} ${next.accessTokenMasked || ""}`.trim()
+            : t(next.locale, "notConfigured"),
+        );
       })
       .catch(() => {
-        setStatus("浏览器预览模式，未连接本地配置");
+        setStatus(t(localLocale, "previewMode"));
       });
+    // Load once on mount; form fields are owned locally until Save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {
     void getVersion()
       .then(setAppVersion)
-      .catch(() => setAppVersion("1.1.0"));
+      .catch(() => setAppVersion("0.1.0"));
   }, []);
 
-  const refreshUsageAfterToken = React.useCallback(
-    (prefix: string) => {
-      setUsageStatus(`${prefix}，正在刷新用量数据…`);
-      return fetchCurrentUsage()
-        .then((usage) => {
-          onUsageLoaded(usage);
-          setUsageStatus(`${prefix}，本月消费 ${fmtMoney(usage.monthCost)}`);
-          return usage;
-        })
-        .catch((error) => {
-          const message = typeof error === "string" ? error : "用量刷新失败";
-          setUsageStatus(`${prefix}，但用量刷新失败：${message}`);
-          throw error;
-        });
+  const applyConfig = React.useCallback(
+    (next: AppConfigView) => {
+      const normalized = normalizeConfig(next);
+      setConfig(normalized);
+      setBaseUrl(normalized.baseUrl || "");
+      setRefresh(normalized.refreshIntervalSeconds || 60);
+      setAutoRefresh(normalized.autoRefreshEnabled);
+      setThreshold(normalized.lowBalanceThreshold ?? 5);
+      setLocalLocale(normalized.locale);
+      onLocaleChanged(normalized.locale);
+      setAutostart(normalized.autostart);
+      onRefreshIntervalChanged(normalized.refreshIntervalSeconds || 60);
+      onAutoRefreshChanged(normalized.autoRefreshEnabled);
     },
-    [onUsageLoaded],
+    [onAutoRefreshChanged, onLocaleChanged, onRefreshIntervalChanged],
   );
 
-  React.useEffect(() => {
-    const unlistenPromise = listen<AppConfig>("usage-token-captured", (event) => {
-      setConfig(event.payload);
-      setUsageSyncing(false);
-      void refreshUsageAfterToken("已通过网页登录自动同步用量 Token");
-    });
-    return () => {
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [refreshUsageAfterToken]);
-
-  React.useEffect(() => {
-    const unlistenPromise = listen("usage-sync-ended", () => {
-      setUsageSyncing(false);
-      setUsageStatus("登录窗口已关闭，Token 未获取到。可重新点击同步或使用方式二手动粘贴。");
-    });
-    return () => {
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, []);
-
-  const pasteApiKey = React.useCallback(async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      setApiKey(text.trim());
-      setStatus("已从剪贴板读取");
-    } catch {
-      setStatus("剪贴板读取失败");
-    }
-  }, []);
-
-  const saveApiKey = React.useCallback(() => {
+  const saveSettings = React.useCallback(() => {
     setBusy(true);
-    void invoke<AppConfig>("save_api_key", { apiKey })
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setApiKey("");
-        setStatus("已保存，正在验证 Key…");
-        return invoke<BalanceData>("fetch_balance");
-      })
-      .then((balance) => {
-        const symbol = balance.currency === "USD" ? "$" : "¥";
-        const tip = balance.isAvailable ? "" : "（余额不足）";
-        setStatus(`验证通过，当前余额 ${symbol}${balance.totalBalance}${tip}`);
+    setStatus(t(localLocale, "saving"));
+    void invoke<AppConfigView>("save_settings", {
+      baseUrl,
+      accessToken,
+      refreshIntervalSeconds: refresh,
+      autoRefreshEnabled: autoRefresh,
+      lowBalanceThreshold: threshold,
+      locale: localLocale,
+      autostart,
+    })
+      .then((next) => {
+        applyConfig(next);
+        setAccessToken("");
+        setStatus(t(normalizeLocale(next.locale), "saved"));
       })
       .catch((error) => {
-        setStatus(typeof error === "string" ? error : "保存或验证失败");
+        setStatus(typeof error === "string" ? error : t(localLocale, "probeFailed"));
       })
       .finally(() => setBusy(false));
-  }, [apiKey]);
+  }, [accessToken, applyConfig, autoRefresh, autostart, baseUrl, localLocale, refresh, threshold]);
 
-  const clearApiKey = React.useCallback(() => {
+  const probeConnection = React.useCallback(() => {
     setBusy(true);
-    void invoke<AppConfig>("clear_api_key")
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setApiKey("");
-        setStatus("已清除 API Key");
-      })
-      .catch((error) => {
-        setStatus(typeof error === "string" ? error : "清除失败");
-      })
-      .finally(() => setBusy(false));
-  }, []);
-
-  const pasteUsageToken = React.useCallback(async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      setUsageToken(text.trim());
-      setUsageStatus("已从剪贴板读取");
-    } catch {
-      setUsageStatus("剪贴板读取失败");
-    }
-  }, []);
-
-  const startUsageSync = React.useCallback(() => {
-    setUsageSyncing(true);
-    setUsageStatus("正在打开登录窗口…");
-    void invoke<boolean>("start_usage_sync")
-      .then((synced) => {
-        if (!synced) {
-          setUsageStatus("登录完成后，再次点击本按钮即可同步用量（可多点几次）");
+    setStatus(t(localLocale, "probing"));
+    void invoke<ProbeResult>("probe_connection")
+      .then((probe) => {
+        const joined = probe.messages.join(" ");
+        if (joined.toLowerCase().includes("unauthorized")) {
+          setStatus(t(localLocale, "unauthorized"));
+          return;
         }
-        // synced=true 时由 usage-token-captured 事件刷新数据并更新状态
+        if (probe.userSelfOk) {
+          setStatus(`${t(localLocale, "probeOk")}: ${probe.messages.join("; ")}`);
+          return;
+        }
+        setStatus(`${t(localLocale, "probeFailed")}: ${probe.messages.join("; ")}`);
       })
       .catch((error) => {
-        setUsageStatus(typeof error === "string" ? error : "打开登录窗口失败");
-      })
-      .finally(() => {
-        // 短暂忙碌后自动恢复可点击，允许用户登录后反复点击触发同步
-        window.setTimeout(() => setUsageSyncing(false), 2500);
-      });
-  }, []);
-
-  const saveUsageToken = React.useCallback(() => {
-    setBusy(true);
-    void invoke<AppConfig>("save_usage_token", { usageToken })
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setUsageToken("");
-        setUsageStatus("已保存，正在验证用量 Token…");
-        return refreshUsageAfterToken("手动 Token 已保存");
-      })
-      .catch((error) => {
-        setUsageStatus(typeof error === "string" ? error : "保存或验证失败");
+        const message = typeof error === "string" ? error : t(localLocale, "probeFailed");
+        setStatus(
+          message.toLowerCase().includes("unauthorized")
+            ? t(localLocale, "unauthorized")
+            : message,
+        );
       })
       .finally(() => setBusy(false));
-  }, [refreshUsageAfterToken, usageToken]);
-
-  const clearUsageToken = React.useCallback(() => {
-    setBusy(true);
-    void invoke<AppConfig>("clear_usage_token")
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setUsageToken("");
-        setUsageStatus("已清除用量 Token");
-        onUsageCleared();
-      })
-      .catch((error) => {
-        setUsageStatus(typeof error === "string" ? error : "清除失败");
-      })
-      .finally(() => setBusy(false));
-  }, [onUsageCleared]);
-
-  const saveRefreshInterval = React.useCallback(
-    (seconds: number) => {
-      const previous = refresh;
-      setRefresh(seconds);
-      onRefreshIntervalChanged(seconds);
-      void invoke<AppConfig>("save_refresh_interval", { refreshIntervalSeconds: seconds })
-        .then((nextConfig) => {
-          setConfig(nextConfig);
-          setRefresh(nextConfig.refreshIntervalSeconds || 60);
-          onRefreshIntervalChanged(nextConfig.refreshIntervalSeconds || 60);
-        })
-        .catch(() => {
-          setRefresh(previous);
-          onRefreshIntervalChanged(previous);
-        });
-    },
-    [onRefreshIntervalChanged, refresh],
-  );
-
-  const saveAutoRefreshEnabled = React.useCallback(
-    (enabled: boolean) => {
-      const previous = autoRefresh;
-      setAutoRefresh(enabled);
-      onAutoRefreshChanged(enabled);
-      void invoke<AppConfig>("save_auto_refresh_enabled", { autoRefreshEnabled: enabled })
-        .then((nextConfig) => {
-          setConfig(nextConfig);
-          setAutoRefresh(nextConfig.autoRefreshEnabled);
-          onAutoRefreshChanged(nextConfig.autoRefreshEnabled);
-        })
-        .catch(() => {
-          setAutoRefresh(previous);
-          onAutoRefreshChanged(previous);
-        });
-    },
-    [autoRefresh, onAutoRefreshChanged],
-  );
-
-  const saveAutostart = React.useCallback((enabled: boolean) => {
-    const previous = autostart;
-    setAutostart(enabled);
-    void invoke<AppConfig>("save_autostart", { autostart: enabled })
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setAutostart(nextConfig.autostart);
-      })
-      .catch(() => setAutostart(previous));
-  }, [autostart]);
+  }, [localLocale]);
 
   return (
     <section className="settings-panel" data-testid="settings-panel">
-      <button className="floating-close settings-close" onClick={onBack} aria-label="返回主面板">
+      <button className="floating-close settings-close" onClick={onBack} aria-label={t(localLocale, "settings")}>
         <X size={20} />
       </button>
       <div className="settings-inner">
         <header className="settings-header" data-tauri-drag-region>
           <BrandIcon size={42} />
           <div>
-            <h1>DeepSeek Monitor</h1>
-            <p>设置</p>
+            <h1>{t(localLocale, "appName")}</h1>
+            <p>{t(localLocale, "settings")}</p>
           </div>
         </header>
 
-        <SettingsSection icon={<KeyRound size={15} />} title="API Key">
-          <p>用于调用 DeepSeek API 获取余额和用量数据。当前 Windows 版本会保存在应用本地设置中。</p>
-          <p className="muted">API Key 只在当前这台 Windows 电脑本地保留。</p>
-          <p className="muted config-path">
-            <span>本地位置：</span>
-            <span>{configPath}</span>
-          </p>
+        <SettingsSection icon={<Link2 size={15} />} title={t(localLocale, "baseUrl")}>
           <div className="key-row">
             <input
-              aria-label="API Key"
-              type="password"
-              value={apiKey}
-              placeholder={config?.apiKeyConfigured ? "••••••••••••••••••••••••••••••••••••••••••••••••••" : "sk-..."}
-              onChange={(event) => setApiKey(event.target.value)}
+              aria-label={t(localLocale, "baseUrl")}
+              type="url"
+              value={baseUrl}
+              placeholder="https://..."
+              onChange={(event) => setBaseUrl(event.target.value)}
             />
           </div>
+          <p className="muted config-path">
+            <span>{configPath}</span>
+          </p>
+        </SettingsSection>
+
+        <SettingsSection icon={<KeyRound size={15} />} title={t(localLocale, "accessToken")}>
+          <p className="muted">{t(localLocale, "accessTokenHelper")}</p>
+          <div className="key-row password-row">
+            <input
+              aria-label={t(localLocale, "accessToken")}
+              type={showToken ? "text" : "password"}
+              value={accessToken}
+              placeholder={
+                config?.hasAccessToken
+                  ? config.accessTokenMasked || "••••••••••••••••"
+                  : ""
+              }
+              onChange={(event) => setAccessToken(event.target.value)}
+            />
+            <button
+              type="button"
+              className="ghost-toggle"
+              onClick={() => setShowToken((value) => !value)}
+              aria-label={showToken ? t(localLocale, "hideToken") : t(localLocale, "showToken")}
+            >
+              {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
           <div className="settings-actions">
-            <button className="primary" onClick={saveApiKey} disabled={busy || !apiKey.trim()}>
-              验证并保存
-            </button>
-            <span className={config?.apiKeyConfigured ? "configured" : "configured muted-status"}>
+            <span className={config?.hasAccessToken ? "configured" : "configured muted-status"}>
               <CheckCircle2 size={17} />
-              {config?.apiKeyConfigured ? "已配置" : "未配置"}
+              {config?.hasAccessToken ? t(localLocale, "configured") : t(localLocale, "notConfigured")}
             </span>
-            <button className="secondary" onClick={clearApiKey} disabled={busy || !config?.apiKeyConfigured}>
-              清除 Key
-            </button>
           </div>
         </SettingsSection>
 
-        <SettingsSection icon={<BarChart3 size={15} />} title="用量同步 Token">
-          <p>用于同步 Token 用量、消费和趋势图。DeepSeek 无官方用量 API，需网页登录 token（与上面的 API Key 不同）。</p>
-          <p className="muted">方式一网页登录自动同步</p>
-          <div className="settings-actions usage-sync-actions">
-            <button className="primary" onClick={startUsageSync} disabled={usageSyncing}>
-              {usageSyncing ? "等待登录" : "网页登录自动同步"}
-            </button>
-            <span className={config?.usageTokenConfigured ? "configured" : "configured muted-status"}>
-              <CheckCircle2 size={17} />
-              {config?.usageTokenConfigured ? "已配置" : "未配置"}
-            </span>
-            <button className="secondary" onClick={clearUsageToken} disabled={busy || !config?.usageTokenConfigured}>
-              清除 Token
-            </button>
-          </div>
-          <p className="muted">{usageStatus}</p>
-          <button
-            className="link-button"
-            onClick={() => setShowManualPaste((value) => !value)}
-          >
-            {showManualPaste ? "收起手动粘贴" : "方式二：手动粘贴 token"}
-          </button>
-          {showManualPaste && (
-            <>
-              <p className="muted">
-                获取：浏览器登录 platform.deepseek.com，按 F12 打开控制台，输入
-                JSON.parse(localStorage.userToken).value 回车，复制返回的字符串。
-              </p>
-              <p className="muted">token 会过期，用量查询失败时重新获取一次即可。</p>
-              <div className="key-row">
-                <input
-                  aria-label="用量 Token"
-                  type="password"
-                  value={usageToken}
-                  placeholder={config?.usageTokenConfigured ? "••••••••••••••••••••••••••••••••••••••••••••••••••" : ""}
-                  onChange={(event) => setUsageToken(event.target.value)}
-                />
-              </div>
-              <div className="settings-actions">
-                <button className="primary" onClick={saveUsageToken} disabled={busy || !usageToken.trim()}>
-                  保存 Token
-                </button>
-              </div>
-            </>
-          )}
-        </SettingsSection>
-
-        <SettingsSection icon={<Power size={15} />} title="开机自启">
-          <p>开启后，每次登录 Windows 时自动启动 DeepSeek Monitor。</p>
-          <Toggle label="登录时自动启动" checked={autostart} onChange={saveAutostart} />
-        </SettingsSection>
-
-        <SettingsSection icon={<RefreshCw size={15} />} title="自动刷新">
-          <p>开启后，按设定周期自动从 DeepSeek API 拉取最新数据。</p>
-          <Toggle label="启用自动刷新" checked={autoRefresh} onChange={saveAutoRefreshEnabled} />
+        <SettingsSection icon={<RefreshCw size={15} />} title={t(localLocale, "autoRefresh")}>
+          <Toggle
+            label={t(localLocale, "enableAutoRefresh")}
+            checked={autoRefresh}
+            onChange={setAutoRefresh}
+          />
           {autoRefresh && (
             <div className="segmented">
-              {refreshOptions.map((option) => (
+              {refreshIntervalValues.map((value) => (
                 <button
-                  key={option.value}
-                  className={refresh === option.value ? "selected" : ""}
-                  onClick={() => saveRefreshInterval(option.value)}
+                  key={value}
+                  type="button"
+                  className={refresh === value ? "selected" : ""}
+                  onClick={() => setRefresh(value)}
                 >
-                  {option.label}
+                  {intervalLabels[value]}
                 </button>
               ))}
             </div>
           )}
         </SettingsSection>
 
-        <SettingsSection icon={<Info size={15} />} title="关于">
-          <div className="version-row">
-            <span>当前版本</span>
-            <strong>v{appVersion}</strong>
+        <SettingsSection icon={<CreditCard size={15} />} title={t(localLocale, "lowBalanceThreshold")}>
+          <p className="muted">{t(localLocale, "thresholdHint")}</p>
+          <div className="key-row threshold-row">
+            <input
+              aria-label={t(localLocale, "lowBalanceThreshold")}
+              type="number"
+              min={0}
+              step={0.5}
+              value={threshold}
+              onChange={(event) => setThreshold(Number(event.target.value) || 0)}
+            />
           </div>
         </SettingsSection>
 
+        <SettingsSection icon={<Globe size={15} />} title={t(localLocale, "language")}>
+          <div className="segmented locale-segmented">
+            <button
+              type="button"
+              className={localLocale === "zh" ? "selected" : ""}
+              onClick={() => setLocalLocale("zh")}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              className={localLocale === "en" ? "selected" : ""}
+              onClick={() => setLocalLocale("en")}
+            >
+              English
+            </button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection icon={<Power size={15} />} title={t(localLocale, "autostart")}>
+          <Toggle
+            label={t(localLocale, "enableAutostart")}
+            checked={autostart}
+            onChange={setAutostart}
+          />
+        </SettingsSection>
+
+        <div className="settings-actions settings-footer-actions">
+          <button className="primary" type="button" onClick={saveSettings} disabled={busy}>
+            {t(localLocale, "save")}
+          </button>
+          <button className="secondary" type="button" onClick={probeConnection} disabled={busy}>
+            {t(localLocale, "probe")}
+          </button>
+        </div>
+        <p className="muted status-line">{status}</p>
+
+        <SettingsSection icon={<Info size={15} />} title={t(localLocale, "about")}>
+          <div className="version-row">
+            <span>{t(localLocale, "version")}</span>
+            <strong>v{appVersion}</strong>
+          </div>
+        </SettingsSection>
       </div>
     </section>
   );
