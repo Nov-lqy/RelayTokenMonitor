@@ -452,7 +452,13 @@ function DashboardPanel({
         </div>
       )}
 
-      <UsageChart locale={locale} usage={usage} state={usageState} error={usageError} />
+      <UsageChart
+        locale={locale}
+        byDay={usage?.byDay ?? []}
+        state={usageState}
+        error={usageError}
+        title={t(locale, "tokenUsage7d")}
+      />
     </section>
   );
 }
@@ -570,18 +576,22 @@ function ModelUsageRow({
 
 function UsageChart({
   locale,
-  usage,
+  byDay,
   state,
   error,
+  title,
+  className,
 }: {
   locale: Locale;
-  usage: UsageSummaryView | null;
+  byDay: DayUsageView[];
   state: BalanceState;
-  error: string;
+  error?: string;
+  title: string;
+  className?: string;
 }) {
   const [hoveredIdx, setHoveredIdx] = React.useState<number | null>(null);
   const MIN_BAR = 3;
-  const points = recentUsageDays(usage?.byDay ?? []);
+  const points = recentUsageDays(byDay);
   const maxVal = Math.max(...points.map((point) => point.totalTokens), 1);
   const sumTotal = points.reduce((sum, point) => sum + point.totalTokens, 0);
   const placeholder =
@@ -594,11 +604,11 @@ function UsageChart({
           : t(locale, "noData");
 
   return (
-    <article className="card chart-card">
+    <article className={`card chart-card${className ? ` ${className}` : ""}`}>
       <div className="card-title-row">
         <div className="caption-with-icon">
           <BarChart3 size={16} className="brand-blue" />
-          <span>{t(locale, "tokenUsage7d")}</span>
+          <span>{title}</span>
         </div>
         <span className="chart-total">
           {state === "ok" ? `${t(locale, "total7d")} ${fmtTokensShort(sumTotal)}` : "—"}
@@ -951,7 +961,7 @@ function SettingsPanel({
   const [threshold, setThreshold] = React.useState(5);
   const [localLocale, setLocalLocale] = React.useState<Locale>(locale);
   const [autostart, setAutostart] = React.useState(false);
-  const [appVersion, setAppVersion] = React.useState("0.1.1");
+  const [appVersion, setAppVersion] = React.useState("0.1.2");
   const configPath = config?.configPath ?? "%APPDATA%\\RelayTokenMonitor\\config.json";
 
   const intervalLabels: Record<(typeof refreshIntervalValues)[number], string> = {
@@ -990,7 +1000,7 @@ function SettingsPanel({
   React.useEffect(() => {
     void getVersion()
       .then(setAppVersion)
-      .catch(() => setAppVersion("0.1.1"));
+      .catch(() => setAppVersion("0.1.2"));
   }, []);
 
   const applyConfig = React.useCallback(
@@ -1322,23 +1332,13 @@ function ModelDetailPanel({
         </article>
       </div>
 
-      <article className="card detail-chart">
-        <div className="detail-chart-head">
-          <div>
-            <h2>{t(locale, "usageByModel")}</h2>
-            <span>{t(locale, "total7d")}</span>
-          </div>
-        </div>
-        <div className="chart-placeholder">
-          {usageState === "nokey"
-            ? t(locale, "noAccessToken")
-            : usageState === "loading"
-              ? t(locale, "querying")
-              : data
-                ? `${fmtInt(data.totalTokens)} ${t(locale, "tokens")}`
-                : t(locale, "noData")}
-        </div>
-      </article>
+      <UsageChart
+        locale={locale}
+        byDay={data?.byDay ?? []}
+        state={usageState}
+        title={t(locale, "tokenUsage7d")}
+        className="detail-chart"
+      />
     </section>
   );
 }

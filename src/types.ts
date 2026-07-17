@@ -43,6 +43,8 @@ export interface ModelUsageView {
   modelName: string;
   totalTokens: number;
   quota: number;
+  /** Per-day tokens for this model (used by detail chart). */
+  byDay?: DayUsageView[];
 }
 
 export interface UsageSummaryView {

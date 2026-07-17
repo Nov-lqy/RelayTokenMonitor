@@ -43,12 +43,23 @@ pub fn aggregate_by_model(logs: &[LogRow]) -> HashMap<String, ModelAgg> {
     map
 }
 
-/// Group quota (or tokens) by local calendar day key `YYYY-MM-DD` from unix seconds.
+/// Group tokens by local calendar day key `YYYY-MM-DD` from unix seconds.
 pub fn aggregate_by_day(logs: &[LogRow]) -> HashMap<String, u64> {
     let mut map: HashMap<String, u64> = HashMap::new();
     for row in logs {
         let day = chrono_day_key(row.created_at);
         *map.entry(day).or_insert(0) += row.prompt_tokens + row.completion_tokens;
+    }
+    map
+}
+
+/// Group tokens by `(model_name, YYYY-MM-DD)`.
+pub fn aggregate_by_model_day(logs: &[LogRow]) -> HashMap<(String, String), u64> {
+    let mut map: HashMap<(String, String), u64> = HashMap::new();
+    for row in logs {
+        let day = chrono_day_key(row.created_at);
+        let key = (row.model_name.clone(), day);
+        *map.entry(key).or_insert(0) += row.prompt_tokens + row.completion_tokens;
     }
     map
 }
@@ -111,5 +122,32 @@ mod tests {
         let m = aggregate_by_model(&logs);
         assert_eq!(m.get("gpt-x").unwrap().total_tokens, 20);
         assert_eq!(m.get("claude-y").unwrap().total_tokens, 2);
+    }
+
+    #[test]
+    fn aggregate_by_model_day_splits_per_model() {
+        // 2026-07-17 12:00 CST ≈ 1752724800 (approx); use local midnight via known offset-free approach:
+        // two rows same day different models.
+        let ts = chrono::Local::now().timestamp();
+        let logs = vec![
+            LogRow {
+                model_name: "gpt-x".into(),
+                prompt_tokens: 10,
+                completion_tokens: 0,
+                quota: 1,
+                created_at: ts,
+            },
+            LogRow {
+                model_name: "claude-y".into(),
+                prompt_tokens: 7,
+                completion_tokens: 0,
+                quota: 1,
+                created_at: ts,
+            },
+        ];
+        let m = aggregate_by_model_day(&logs);
+        let day = chrono_day_key(ts);
+        assert_eq!(m.get(&("gpt-x".into(), day.clone())).copied().unwrap_or(0), 10);
+        assert_eq!(m.get(&("claude-y".into(), day)).copied().unwrap_or(0), 7);
     }
 }

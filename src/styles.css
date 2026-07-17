@@ -1092,6 +1092,13 @@ button:disabled {
   background: linear-gradient(180deg, rgba(26, 50, 21, 0.58), rgba(34, 41, 17, 0.62));
 }
 
+.detail-panel .chart-card.detail-chart {
+  flex: 1 1 auto;
+  flex-shrink: 1;
+  min-height: 160px;
+  overflow: visible;
+}
+
 .detail-chart-head {
   display: flex;
   justify-content: space-between;

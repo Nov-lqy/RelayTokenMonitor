@@ -1,5 +1,6 @@
 use crate::aggregate::{
-    aggregate_by_day, aggregate_by_model, is_low_balance, quota_to_cny, remaining_cny,
+    aggregate_by_day, aggregate_by_model, aggregate_by_model_day, is_low_balance, quota_to_cny,
+    remaining_cny,
 };
 use crate::config::{
     config_path, mask_secret, read_stored_config, write_stored_config, StoredConfig, StoredKey,
@@ -82,6 +83,8 @@ pub struct ModelUsageDto {
     pub model_name: String,
     pub total_tokens: u64,
     pub quota: u64,
+    #[serde(default)]
+    pub by_day: Vec<DayUsageDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -472,12 +475,25 @@ pub fn fetch_usage_summary(days: u32, force: Option<bool>) -> Result<UsageSummar
         .collect();
     by_day.sort_by(|a, b| a.date.cmp(&b.date));
 
+    let model_days = aggregate_by_model_day(&logs);
     let mut by_model: Vec<ModelUsageDto> = aggregate_by_model(&logs)
         .into_iter()
-        .map(|(model_name, agg)| ModelUsageDto {
-            model_name,
-            total_tokens: agg.total_tokens,
-            quota: agg.quota,
+        .map(|(model_name, agg)| {
+            let mut days: Vec<DayUsageDto> = model_days
+                .iter()
+                .filter(|((name, _), _)| name == &model_name)
+                .map(|((_, date), total_tokens)| DayUsageDto {
+                    date: date.clone(),
+                    total_tokens: *total_tokens,
+                })
+                .collect();
+            days.sort_by(|a, b| a.date.cmp(&b.date));
+            ModelUsageDto {
+                model_name,
+                total_tokens: agg.total_tokens,
+                quota: agg.quota,
+                by_day: days,
+            }
         })
         .collect();
     by_model.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
