@@ -411,10 +411,50 @@ button {
   white-space: nowrap;
 }
 
+.model-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.model-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.model-filter-label {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .usage-stack {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  /* ~2 usage rows visible; overflow scrolls so the 7-day chart stays on screen */
+  max-height: 142px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 0 1 auto;
+  padding-right: 2px;
+}
+
+.usage-stack::-webkit-scrollbar {
+  width: 4px;
+}
+
+.usage-stack::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .usage-row {
@@ -547,6 +587,7 @@ button {
   display: flex;
   flex-direction: column;
   overflow: visible; /* 让 hover 弹窗可溢出卡片显示 */
+  flex-shrink: 0;
 }
 
 .chart-total {

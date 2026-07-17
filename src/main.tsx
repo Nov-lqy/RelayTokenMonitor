@@ -170,9 +170,9 @@ function App() {
       });
   }, [locale]);
 
-  const loadUsage = React.useCallback(() => {
+  const loadUsage = React.useCallback((force = false) => {
     setUsageState((prev) => (lastUsageRef.current ? prev : "loading"));
-    void invoke<UsageSummaryView>("fetch_usage_summary", { days: 7 })
+    void invoke<UsageSummaryView>("fetch_usage_summary", { days: 7, force })
       .then((data) => {
         lastUsageRef.current = data;
         setUsage(data);
@@ -197,14 +197,20 @@ function App() {
       });
   }, [locale]);
 
-  const refreshAll = React.useCallback(() => {
-    loadBalance();
-    loadUsage();
-  }, [loadBalance, loadUsage]);
+  const refreshAll = React.useCallback(
+    (forceUsage = false) => {
+      loadBalance();
+      loadUsage(forceUsage);
+    },
+    [loadBalance, loadUsage],
+  );
 
   React.useEffect(() => {
-    refreshAll();
-  }, [refreshAll]);
+    if (view === "dashboard") {
+      // Soft refresh: reuse ~45s usage cache when returning to home.
+      refreshAll(false);
+    }
+  }, [view, refreshAll]);
 
   React.useEffect(() => {
     void invoke<AppConfigView>("get_app_config")
@@ -224,7 +230,8 @@ function App() {
     if (!autoRefreshEnabled) {
       return;
     }
-    const timer = window.setInterval(refreshAll, refreshIntervalSeconds * 1000);
+    // Auto tick: balance every time; usage only if cache expired (force=false).
+    const timer = window.setInterval(() => refreshAll(false), refreshIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
   }, [autoRefreshEnabled, refreshAll, refreshIntervalSeconds]);
 
@@ -245,7 +252,7 @@ function App() {
           usage={usage}
           usageState={usageState}
           usageError={usageError}
-          onRefresh={refreshAll}
+          onRefresh={() => refreshAll(true)}
           onClose={hideWindow}
           onKeys={() => setView("keys")}
           onSettings={() => setView("settings")}
@@ -359,6 +366,7 @@ function DashboardPanel({
   const daySlots = recentUsageDays(usage?.byDay ?? []);
   const todayTokens = daySlots.find((day) => day.date === todayStr())?.totalTokens ?? null;
   const total7d = daySlots.reduce((sum, day) => sum + day.totalTokens, 0);
+  const filterTokenName = usage?.filterTokenName?.trim() || "";
   const unauthorized =
     balanceError.toLowerCase().includes("unauthorized") ||
     balanceError.includes("登录态") ||
@@ -418,18 +426,29 @@ function DashboardPanel({
         total7d={usageState === "ok" ? total7d : null}
       />
 
-      {models.length > 0 && (
-        <div className="usage-stack">
-          {models.slice(0, 4).map((model) => (
-            <ModelUsageRow
-              key={model.modelName}
-              locale={locale}
-              model={model}
-              maxTokens={maxTokens}
-              state={usageState}
-              onClick={() => onDetail(model.modelName)}
-            />
-          ))}
+      {(models.length > 0 || filterTokenName) && (
+        <div className="model-section">
+          <div className="model-section-head">
+            <span className="model-filter-label">
+              {filterTokenName
+                ? `${t(locale, "currentTokenFilter")}: ${filterTokenName}`
+                : t(locale, "allTokensUsage")}
+            </span>
+          </div>
+          {models.length > 0 && (
+            <div className="usage-stack">
+              {models.map((model) => (
+                <ModelUsageRow
+                  key={model.modelName}
+                  locale={locale}
+                  model={model}
+                  maxTokens={maxTokens}
+                  state={usageState}
+                  onClick={() => onDetail(model.modelName)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -932,7 +951,7 @@ function SettingsPanel({
   const [threshold, setThreshold] = React.useState(5);
   const [localLocale, setLocalLocale] = React.useState<Locale>(locale);
   const [autostart, setAutostart] = React.useState(false);
-  const [appVersion, setAppVersion] = React.useState("0.1.0");
+  const [appVersion, setAppVersion] = React.useState("0.1.1");
   const configPath = config?.configPath ?? "%APPDATA%\\RelayTokenMonitor\\config.json";
 
   const intervalLabels: Record<(typeof refreshIntervalValues)[number], string> = {
@@ -971,7 +990,7 @@ function SettingsPanel({
   React.useEffect(() => {
     void getVersion()
       .then(setAppVersion)
-      .catch(() => setAppVersion("0.1.0"));
+      .catch(() => setAppVersion("0.1.1"));
   }, []);
 
   const applyConfig = React.useCallback(
@@ -1032,12 +1051,22 @@ function SettingsPanel({
     void invoke<ProbeResult>("probe_connection")
       .then((probe) => {
         const joined = probe.messages.join(" ");
-        if (joined.toLowerCase().includes("unauthorized")) {
+        const accessUnauthorized =
+          !probe.userSelfOk &&
+          (joined.toLowerCase().includes("unauthorized") ||
+            joined.includes("登录态") ||
+            joined.toLowerCase().includes("access token"));
+        if (accessUnauthorized) {
           setStatus(t(localLocale, "unauthorized"));
           return;
         }
         if (probe.userSelfOk) {
-          setStatus(`${t(localLocale, "probeOk")}: ${probe.messages.join("; ")}`);
+          const hint = probe.sampleKeyOk
+            ? ""
+            : joined.toLowerCase().includes("full sk")
+              ? ` — ${t(localLocale, "syncNeedsFullSk")}`
+              : "";
+          setStatus(`${t(localLocale, "probeOk")}: ${probe.messages.join("; ")}${hint}`);
           return;
         }
         setStatus(`${t(localLocale, "probeFailed")}: ${probe.messages.join("; ")}`);

@@ -85,6 +85,9 @@ const dict = {
     themeToDark: "切换到深色",
     goToSettings: "前往设置",
     unauthorizedHint: "登录态失效，请重新粘贴 Access Token",
+    currentTokenFilter: "当前令牌",
+    allTokensUsage: "全部令牌",
+    syncNeedsFullSk: "面板同步无法拿到完整 SK，请在密钥页手动粘贴 sk-...",
   },
   en: {
     balance: "Balance",
@@ -171,6 +174,9 @@ const dict = {
     themeToDark: "Switch to dark",
     goToSettings: "Open settings",
     unauthorizedHint: "Session expired — paste a new Access Token",
+    currentTokenFilter: "Current token",
+    allTokensUsage: "All tokens",
+    syncNeedsFullSk: "Panel sync cannot provide full SK — paste sk-... on the Keys page",
   },
 } as const;
 

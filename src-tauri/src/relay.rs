@@ -1,7 +1,21 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::OnceLock;
 use crate::aggregate::LogRow;
+
+const HTTP_TIMEOUT_SECS: u64 = 8;
+
+fn http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .pool_max_idle_per_host(4)
+            .build()
+            .expect("reqwest client")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSelf {
@@ -33,19 +47,29 @@ pub fn api_url(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
+/// Minimal query-component encoding for token_name (RFC 3986 unreserved passthrough).
+fn urlencoding_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
 pub fn parse_user_self(v: &Value) -> Result<UserSelf, String> {
     let data = v.get("data").ok_or("missing data")?;
     Ok(UserSelf {
         quota: data.get("quota").and_then(|x| x.as_u64()).unwrap_or(0),
         used_quota: data.get("used_quota").and_then(|x| x.as_u64()).unwrap_or(0),
     })
-}
-
-fn client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())
 }
 
 fn map_api_error(status: reqwest::StatusCode, v: &Value) -> String {
@@ -84,7 +108,7 @@ fn auth_get(
     new_api_user: Option<&str>,
 ) -> Result<Value, String> {
     let url = api_url(base, path);
-    let mut req = client()?
+    let mut req = http_client()
         .get(&url)
         .header("Authorization", format!("Bearer {}", token));
     if let Some(uid) = new_api_user.map(str::trim).filter(|u| !u.is_empty()) {
@@ -132,11 +156,16 @@ pub fn fetch_log_self(
     user_id: &str,
     start_ts: i64,
     end_ts: i64,
+    token_name: Option<&str>,
 ) -> Result<Vec<LogRow>, String> {
-    let path = format!(
+    let mut path = format!(
         "/api/log/self?type=2&start_timestamp={}&end_timestamp={}&page_size=100",
         start_ts, end_ts
     );
+    if let Some(name) = token_name.map(str::trim).filter(|n| !n.is_empty()) {
+        path.push_str("&token_name=");
+        path.push_str(&urlencoding_encode(name));
+    }
     let v = auth_get(base, &path, access_token, Some(user_id))?;
     let items = v.pointer("/data/items")
         .or_else(|| v.pointer("/data"))
@@ -185,33 +214,57 @@ pub fn fetch_remote_tokens(
 }
 
 /// Merge remote tokens into local keys by sk; never delete local-only keys.
+/// CCTQ/New API list endpoints often return truncated key fragments (not full `sk-...`);
+/// those must not be stored as usable secrets.
 pub fn merge_remote_keys(
     local: &mut Vec<crate::config::StoredKey>,
     remote: &[RemoteToken],
 ) -> usize {
     let mut added = 0;
     for r in remote {
-        if r.key.is_empty() {
+        let remote_id = format!("remote-{}", r.id);
+        if let Some(existing) = local.iter_mut().find(|k| k.id == remote_id || (!r.key.is_empty() && k.sk == r.key && is_usable_sk(&r.key))) {
+            if !r.name.is_empty() {
+                existing.name = r.name.clone();
+            }
+            existing.enabled = r.status == 1;
+            existing.last_known_remaining = Some(r.remain_quota as f64);
+            if is_usable_sk(&r.key) {
+                existing.sk = r.key.clone();
+            }
             continue;
         }
-        if local.iter().any(|k| k.sk == r.key) {
+
+        if local.iter().any(|k| is_usable_sk(&r.key) && k.sk == r.key) {
             continue;
         }
+
+        let usable = is_usable_sk(&r.key);
         local.push(crate::config::StoredKey {
-            id: format!("remote-{}", r.id),
+            id: remote_id,
             name: if r.name.is_empty() {
                 format!("token-{}", r.id)
             } else {
                 r.name.clone()
             },
-            sk: r.key.clone(),
-            note: "synced".into(),
+            sk: if usable { r.key.clone() } else { String::new() },
+            note: if usable {
+                "synced".into()
+            } else {
+                "synced — paste full sk".into()
+            },
             enabled: r.status == 1,
             last_known_remaining: Some(r.remain_quota as f64),
         });
         added += 1;
     }
     added
+}
+
+/// Full API keys from New API are `sk-...` and much longer than list-view fragments.
+pub fn is_usable_sk(key: &str) -> bool {
+    let key = key.trim();
+    key.starts_with("sk-") && key.len() >= 24
 }
 
 #[cfg(test)]
@@ -235,5 +288,39 @@ mod tests {
         let u = parse_user_self(&v).unwrap();
         assert_eq!(u.quota, 2_500_000);
         assert_eq!(u.used_quota, 500_000);
+    }
+
+    #[test]
+    fn urlencoding_encodes_spaces_and_keeps_safe_chars() {
+        assert_eq!(urlencoding_encode("my-token_1"), "my-token_1");
+        assert_eq!(urlencoding_encode("a b"), "a%20b");
+        assert_eq!(urlencoding_encode("中"), "%E4%B8%AD");
+    }
+
+    #[test]
+    fn usable_sk_rejects_truncated_fragments() {
+        assert!(!is_usable_sk(""));
+        assert!(!is_usable_sk("tFHm****fragment"));
+        assert!(!is_usable_sk("sk-short"));
+        assert!(is_usable_sk("sk-abcdefghijklmnopqrstuvwx"));
+    }
+
+    #[test]
+    fn merge_remote_keys_skips_storing_truncated_secret() {
+        let remote = vec![RemoteToken {
+            id: 1,
+            name: "demo".into(),
+            key: "tFHmTruncatedFrag!".into(),
+            status: 1,
+            remain_quota: 100,
+            used_quota: 0,
+            unlimited_quota: false,
+        }];
+        let mut local = vec![];
+        let added = merge_remote_keys(&mut local, &remote);
+        assert_eq!(added, 1);
+        assert_eq!(local[0].name, "demo");
+        assert!(local[0].sk.is_empty());
+        assert!(local[0].note.contains("paste full sk"));
     }
 }

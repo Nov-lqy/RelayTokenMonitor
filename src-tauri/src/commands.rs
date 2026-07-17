@@ -9,8 +9,23 @@ use crate::relay::{
 };
 use serde::Serialize;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
+
+const USAGE_CACHE_TTL: Duration = Duration::from_secs(45);
+
+#[derive(Clone)]
+struct UsageCacheEntry {
+    key: String,
+    fetched_at: Instant,
+    value: UsageSummaryDto,
+}
+
+fn usage_cache() -> &'static Mutex<Option<UsageCacheEntry>> {
+    static CACHE: Mutex<Option<UsageCacheEntry>> = Mutex::new(None);
+    &CACHE
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,14 +69,14 @@ pub struct BalanceDto {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DayUsageDto {
     pub date: String,
     pub total_tokens: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelUsageDto {
     pub model_name: String,
@@ -69,11 +84,13 @@ pub struct ModelUsageDto {
     pub quota: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummaryDto {
     pub by_day: Vec<DayUsageDto>,
     pub by_model: Vec<ModelUsageDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_token_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -399,14 +416,49 @@ pub fn fetch_balance() -> Result<BalanceDto, String> {
 }
 
 #[tauri::command]
-pub fn fetch_usage_summary(days: u32) -> Result<UsageSummaryDto, String> {
+pub fn fetch_usage_summary(days: u32, force: Option<bool>) -> Result<UsageSummaryDto, String> {
     let cfg = read_stored_config();
     let (base, token, user_id) = require_panel_auth(&cfg)?;
     let days = days.max(1).min(90) as i64;
+    let force = force.unwrap_or(false);
+
+    let filter_token_name = cfg
+        .current_key_id
+        .as_ref()
+        .and_then(|id| cfg.keys.iter().find(|k| &k.id == id))
+        .map(|k| k.name.trim().to_string())
+        .filter(|n| !n.is_empty());
+
+    let cache_key = format!(
+        "{}|{}|{}|{}",
+        base,
+        user_id,
+        days,
+        filter_token_name.as_deref().unwrap_or("")
+    );
+
+    if !force {
+        if let Ok(guard) = usage_cache().lock() {
+            if let Some(entry) = guard.as_ref() {
+                if entry.key == cache_key && entry.fetched_at.elapsed() < USAGE_CACHE_TTL {
+                    return Ok(entry.value.clone());
+                }
+            }
+        }
+    }
+
     let end_ts = now_unix();
     let start_ts = end_ts - days * 86_400;
 
-    let logs = fetch_log_self(&base, &token, &user_id, start_ts, end_ts).map_err(|e| {
+    let logs = fetch_log_self(
+        &base,
+        &token,
+        &user_id,
+        start_ts,
+        end_ts,
+        filter_token_name.as_deref(),
+    )
+    .map_err(|e| {
         if e == "unauthorized" || e.to_lowercase().contains("unauthorized") {
             "unauthorized".to_string()
         } else {
@@ -430,7 +482,21 @@ pub fn fetch_usage_summary(days: u32) -> Result<UsageSummaryDto, String> {
         .collect();
     by_model.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
 
-    Ok(UsageSummaryDto { by_day, by_model })
+    let summary = UsageSummaryDto {
+        by_day,
+        by_model,
+        filter_token_name,
+    };
+
+    if let Ok(mut guard) = usage_cache().lock() {
+        *guard = Some(UsageCacheEntry {
+            key: cache_key,
+            fetched_at: Instant::now(),
+            value: summary.clone(),
+        });
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -521,7 +587,11 @@ pub fn probe_connection() -> Result<ProbeResult, String> {
         Err(e) => messages.push(e),
     }
 
-    if let Some(key) = cfg.keys.iter().find(|k| k.enabled && !k.sk.is_empty()) {
+    if let Some(key) = cfg
+        .keys
+        .iter()
+        .find(|k| k.enabled && crate::relay::is_usable_sk(&k.sk))
+    {
         match fetch_token_usage(&cfg.base_url, &key.sk) {
             Ok(usage) => {
                 sample_key_ok = true;
@@ -532,6 +602,8 @@ pub fn probe_connection() -> Result<ProbeResult, String> {
             }
             Err(e) => messages.push(format!("sample key failed: {e}")),
         }
+    } else if cfg.keys.iter().any(|k| k.enabled) {
+        messages.push("synced keys need full sk- pasted manually".into());
     } else {
         messages.push("no enabled key to probe".into());
     }

@@ -48,6 +48,8 @@ export interface ModelUsageView {
 export interface UsageSummaryView {
   byDay: DayUsageView[];
   byModel: ModelUsageView[];
+  /** Present when usage is filtered to the current key's panel token_name. */
+  filterTokenName?: string;
 }
 
 export interface SyncKeysResult {
