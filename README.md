@@ -2,7 +2,7 @@
 
 Windows 托盘应用：监控 CCTQ / New API 兼容中转站的账户余额、多 API Key 剩余额度，以及约 7 日 Token 用量趋势。
 
-当前版本：**0.1.2**
+当前版本：**0.1.3**
 
 基于 DeepSeekMonitorWindows（Tauri 2 + React + Rust）适配改造，**不是** DeepSeek 或 CCTQ 官方产品。
 
@@ -57,7 +57,7 @@ npm install
 npx tauri build
 ```
 
-产物一般在 `src-tauri\target\release\bundle\nsis\`（例如 `RelayTokenMonitor_0.1.2_x64-setup.exe`）。
+产物一般在 `src-tauri\target\release\bundle\nsis\`（例如 `RelayTokenMonitor_0.1.3_x64-setup.exe`）。
 
 构建前请确保本机 `rustup default` 已配置，且 Visual Studio Build Tools（C++）可用。
 

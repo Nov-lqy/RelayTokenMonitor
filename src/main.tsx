@@ -422,7 +422,7 @@ function DashboardPanel({
         balance={balance}
         state={balanceState}
         error={balanceError}
-        todayTokens={todayTokens}
+        todayTokens={usageState === "ok" ? todayTokens : null}
         total7d={usageState === "ok" ? total7d : null}
       />
 
@@ -567,7 +567,7 @@ function ModelUsageRow({
         </div>
       </div>
       <div className="usage-price">
-        <strong>{fmtInt(model.quota)}</strong>
+        <strong>{fmtMoney(model.quota)}</strong>
         <span>{t(locale, "quotaUsed")}</span>
       </div>
     </button>
@@ -1304,7 +1304,7 @@ function ModelDetailPanel({
 }) {
   const data = usage?.byModel.find((item) => item.modelName === modelName) ?? null;
   const totalText = data ? fmtTokensShort(data.totalTokens) : "—";
-  const quotaText = data ? fmtInt(data.quota) : "—";
+  const quotaText = data ? fmtMoney(data.quota) : "—";
 
   return (
     <section className="panel detail-panel" data-testid="detail-panel">

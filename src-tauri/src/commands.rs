@@ -1,6 +1,6 @@
 use crate::aggregate::{
-    aggregate_by_day, aggregate_by_model, aggregate_by_model_day, is_low_balance, quota_to_cny,
-    remaining_cny,
+    aggregate_by_day, aggregate_by_model, aggregate_by_model_day, is_low_balance,
+    last_n_local_day_ranges, quota_to_cny, remaining_cny,
 };
 use crate::config::{
     config_path, mask_secret, read_stored_config, write_stored_config, StoredConfig, StoredKey,
@@ -82,7 +82,8 @@ pub struct DayUsageDto {
 pub struct ModelUsageDto {
     pub model_name: String,
     pub total_tokens: u64,
-    pub quota: u64,
+    /// Log `quota` sum converted to CNY via `quota_per_unit`.
+    pub quota: f64,
     #[serde(default)]
     pub by_day: Vec<DayUsageDto>,
 }
@@ -450,24 +451,27 @@ pub fn fetch_usage_summary(days: u32, force: Option<bool>) -> Result<UsageSummar
         }
     }
 
-    let end_ts = now_unix();
-    let start_ts = end_ts - days * 86_400;
-
-    let logs = fetch_log_self(
-        &base,
-        &token,
-        &user_id,
-        start_ts,
-        end_ts,
-        filter_token_name.as_deref(),
-    )
-    .map_err(|e| {
-        if e == "unauthorized" || e.to_lowercase().contains("unauthorized") {
-            "unauthorized".to_string()
-        } else {
-            e
-        }
-    })?;
+    // Fetch per local calendar day so a heavy “today” (newest-first pagination,
+    // max ~5k rows) cannot starve older days in the 7-day chart.
+    let mut logs = Vec::new();
+    for (start_ts, end_ts) in last_n_local_day_ranges(days as u32) {
+        let mut day_logs = fetch_log_self(
+            &base,
+            &token,
+            &user_id,
+            start_ts,
+            end_ts,
+            filter_token_name.as_deref(),
+        )
+        .map_err(|e| {
+            if e == "unauthorized" || e.to_lowercase().contains("unauthorized") {
+                "unauthorized".to_string()
+            } else {
+                e
+            }
+        })?;
+        logs.append(&mut day_logs);
+    }
 
     let mut by_day: Vec<DayUsageDto> = aggregate_by_day(&logs)
         .into_iter()
@@ -475,6 +479,7 @@ pub fn fetch_usage_summary(days: u32, force: Option<bool>) -> Result<UsageSummar
         .collect();
     by_day.sort_by(|a, b| a.date.cmp(&b.date));
 
+    let quota_per_unit = cfg.quota_per_unit;
     let model_days = aggregate_by_model_day(&logs);
     let mut by_model: Vec<ModelUsageDto> = aggregate_by_model(&logs)
         .into_iter()
@@ -491,7 +496,7 @@ pub fn fetch_usage_summary(days: u32, force: Option<bool>) -> Result<UsageSummar
             ModelUsageDto {
                 model_name,
                 total_tokens: agg.total_tokens,
-                quota: agg.quota,
+                quota: quota_to_cny(agg.quota, quota_per_unit),
                 by_day: days,
             }
         })
@@ -573,7 +578,7 @@ pub fn sync_keys_from_panel() -> Result<SyncKeysResult, String> {
             e
         }
     })?;
-    let added = merge_remote_keys(&mut cfg.keys, &remote);
+    let added = merge_remote_keys(&mut cfg.keys, &remote, cfg.quota_per_unit);
     write_stored_config(&cfg)?;
     Ok(SyncKeysResult {
         added: added as u32,

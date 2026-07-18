@@ -150,6 +150,56 @@ pub fn fetch_token_usage(base: &str, sk: &str) -> Result<TokenUsage, String> {
     })
 }
 
+const LOG_PAGE_SIZE: u32 = 100;
+/// Hard cap so a pathological account cannot loop forever (~5k rows).
+const LOG_MAX_PAGES: u32 = 50;
+
+fn parse_log_items(v: &Value) -> Vec<LogRow> {
+    let items = v
+        .pointer("/data/items")
+        .or_else(|| v.pointer("/data"))
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut rows = Vec::with_capacity(items.len());
+    for it in items {
+        if !it.is_object() {
+            continue;
+        }
+        rows.push(LogRow {
+            model_name: it
+                .get("model_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .into(),
+            prompt_tokens: it.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            completion_tokens: it
+                .get("completion_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            quota: it.get("quota").and_then(|x| x.as_u64()).unwrap_or(0),
+            created_at: normalize_created_at(
+                it.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0),
+            ),
+        });
+    }
+    rows
+}
+
+/// New API stores seconds; some forks emit ms. Treat values past year ~2286 as ms.
+fn normalize_created_at(ts: i64) -> i64 {
+    if ts > 10_000_000_000 {
+        ts / 1000
+    } else {
+        ts
+    }
+}
+
+/// New API page query: `p=0` and `p=1` both mean first page; page 2+ via `p=2`…
+fn log_total(v: &Value) -> Option<u64> {
+    v.pointer("/data/total").and_then(|x| x.as_u64())
+}
+
 pub fn fetch_log_self(
     base: &str,
     access_token: &str,
@@ -158,31 +208,43 @@ pub fn fetch_log_self(
     end_ts: i64,
     token_name: Option<&str>,
 ) -> Result<Vec<LogRow>, String> {
-    let mut path = format!(
-        "/api/log/self?type=2&start_timestamp={}&end_timestamp={}&page_size=100",
-        start_ts, end_ts
-    );
-    if let Some(name) = token_name.map(str::trim).filter(|n| !n.is_empty()) {
-        path.push_str("&token_name=");
-        path.push_str(&urlencoding_encode(name));
-    }
-    let v = auth_get(base, &path, access_token, Some(user_id))?;
-    let items = v.pointer("/data/items")
-        .or_else(|| v.pointer("/data"))
-        .and_then(|x| x.as_array())
-        .cloned()
+    let token_q = token_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| format!("&token_name={}", urlencoding_encode(n)))
         .unwrap_or_default();
+
     let mut rows = Vec::new();
-    for it in items {
-        if !it.is_object() { continue; }
-        rows.push(LogRow {
-            model_name: it.get("model_name").and_then(|x| x.as_str()).unwrap_or("unknown").into(),
-            prompt_tokens: it.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            completion_tokens: it.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            quota: it.get("quota").and_then(|x| x.as_u64()).unwrap_or(0),
-            created_at: it.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0),
-        });
+    let mut page: u32 = 1;
+    let mut expected_total: Option<u64> = None;
+
+    while page <= LOG_MAX_PAGES {
+        let path = format!(
+            "/api/log/self?type=2&start_timestamp={}&end_timestamp={}&page_size={}&p={}{}",
+            start_ts, end_ts, LOG_PAGE_SIZE, page, token_q
+        );
+        let v = auth_get(base, &path, access_token, Some(user_id))?;
+        if page == 1 {
+            expected_total = log_total(&v);
+        }
+        let batch = parse_log_items(&v);
+        let batch_len = batch.len();
+        rows.extend(batch);
+
+        if batch_len == 0 {
+            break;
+        }
+        if let Some(total) = expected_total {
+            if rows.len() as u64 >= total {
+                break;
+            }
+        }
+        if batch_len < LOG_PAGE_SIZE as usize {
+            break;
+        }
+        page += 1;
     }
+
     Ok(rows)
 }
 
@@ -216,19 +278,23 @@ pub fn fetch_remote_tokens(
 /// Merge remote tokens into local keys by sk; never delete local-only keys.
 /// CCTQ/New API list endpoints often return truncated key fragments (not full `sk-...`);
 /// those must not be stored as usable secrets.
+///
+/// `remain_quota` is stored as CNY via `quota_per_unit` (same unit as `refresh_key_usage`).
 pub fn merge_remote_keys(
     local: &mut Vec<crate::config::StoredKey>,
     remote: &[RemoteToken],
+    quota_per_unit: u64,
 ) -> usize {
     let mut added = 0;
     for r in remote {
         let remote_id = format!("remote-{}", r.id);
+        let remain_cny = crate::aggregate::quota_to_cny(r.remain_quota, quota_per_unit);
         if let Some(existing) = local.iter_mut().find(|k| k.id == remote_id || (!r.key.is_empty() && k.sk == r.key && is_usable_sk(&r.key))) {
             if !r.name.is_empty() {
                 existing.name = r.name.clone();
             }
             existing.enabled = r.status == 1;
-            existing.last_known_remaining = Some(r.remain_quota as f64);
+            existing.last_known_remaining = Some(remain_cny);
             if is_usable_sk(&r.key) {
                 existing.sk = r.key.clone();
             }
@@ -254,7 +320,7 @@ pub fn merge_remote_keys(
                 "synced — paste full sk".into()
             },
             enabled: r.status == 1,
-            last_known_remaining: Some(r.remain_quota as f64),
+            last_known_remaining: Some(remain_cny),
         });
         added += 1;
     }
@@ -306,6 +372,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_log_items_reads_nested_items() {
+        let v = serde_json::json!({
+            "success": true,
+            "data": {
+                "total": 2,
+                "items": [
+                    {
+                        "model_name": "gpt-x",
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "quota": 100,
+                        "created_at": 1752724800
+                    },
+                    {
+                        "model_name": "claude-y",
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "quota": 40,
+                        "created_at": 1752724900000i64
+                    }
+                ]
+            }
+        });
+        assert_eq!(log_total(&v), Some(2));
+        let rows = parse_log_items(&v);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].model_name, "gpt-x");
+        assert_eq!(rows[0].prompt_tokens + rows[0].completion_tokens, 15);
+        assert_eq!(rows[0].created_at, 1752724800);
+        assert_eq!(rows[1].quota, 40);
+        assert_eq!(rows[1].created_at, 1752724900);
+    }
+
+    #[test]
+    fn normalize_created_at_divides_millis() {
+        assert_eq!(normalize_created_at(1752724800), 1752724800);
+        assert_eq!(normalize_created_at(1752724800000), 1752724800);
+    }
+
+    #[test]
     fn merge_remote_keys_skips_storing_truncated_secret() {
         let remote = vec![RemoteToken {
             id: 1,
@@ -317,8 +423,9 @@ mod tests {
             unlimited_quota: false,
         }];
         let mut local = vec![];
-        let added = merge_remote_keys(&mut local, &remote);
+        let added = merge_remote_keys(&mut local, &remote, 500_000);
         assert_eq!(added, 1);
+        assert!((local[0].last_known_remaining.unwrap_or(-1.0) - 0.0002).abs() < 1e-9);
         assert_eq!(local[0].name, "demo");
         assert!(local[0].sk.is_empty());
         assert!(local[0].note.contains("paste full sk"));

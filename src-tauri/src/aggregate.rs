@@ -73,6 +73,37 @@ fn chrono_day_key(ts: i64) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// Inclusive unix-second ranges for the last `n` local calendar days (oldest → newest).
+/// Today’s range ends at “now” so we do not wait for midnight.
+pub fn last_n_local_day_ranges(n: u32) -> Vec<(i64, i64)> {
+    use chrono::{Duration, Local, NaiveTime, TimeZone};
+    let n = n.max(1) as i64;
+    let now = Local::now();
+    let today = now.date_naive();
+    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    let mut out = Vec::with_capacity(n as usize);
+    for i in (0..n).rev() {
+        let day = today - Duration::days(i);
+        let start_ts = Local
+            .from_local_datetime(&day.and_time(midnight))
+            .single()
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
+        let end_ts = if i == 0 {
+            now.timestamp()
+        } else {
+            let next = day + Duration::days(1);
+            Local
+                .from_local_datetime(&next.and_time(midnight))
+                .single()
+                .map(|dt| dt.timestamp() - 1)
+                .unwrap_or(start_ts)
+        };
+        out.push((start_ts, end_ts));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +180,20 @@ mod tests {
         let day = chrono_day_key(ts);
         assert_eq!(m.get(&("gpt-x".into(), day.clone())).copied().unwrap_or(0), 10);
         assert_eq!(m.get(&("claude-y".into(), day)).copied().unwrap_or(0), 7);
+    }
+
+    #[test]
+    fn last_n_local_day_ranges_covers_n_days_oldest_first() {
+        let ranges = last_n_local_day_ranges(7);
+        assert_eq!(ranges.len(), 7);
+        for window in ranges.windows(2) {
+            assert!(window[0].0 < window[1].0);
+            assert!(window[0].1 < window[1].0);
+        }
+        let (start, end) = ranges[6];
+        assert!(end >= start);
+        let now = chrono::Local::now().timestamp();
+        assert!(end <= now + 1);
+        assert!(now - start < 8 * 86_400);
     }
 }
